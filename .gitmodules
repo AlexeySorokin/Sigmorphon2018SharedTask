@@ -1,0 +1,3 @@
+[submodule "conll2018"]
+	path = conll2018
+	url = https://github.com/sigmorphon/conll2018
