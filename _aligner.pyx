@@ -40,7 +40,8 @@ cdef int draw_min(double x, double y, double z):
 cdef class CythonAlignerImpl:
 
     cdef int n_iter, pairs_number, total_count, max_code, codes_number
-    cdef int random_state, verbose, EMPTY 
+    cdef int random_state, verbose
+    cdef np.int64_t EMPTY
     cdef double prior
     cdef bool separate_endings
     cdef double[:] counts
@@ -138,7 +139,7 @@ cdef class CythonAlignerImpl:
         
         
     # @cython.profile
-    cdef _make_trellis(self, np.ndarray[int,ndim=1] x, np.ndarray[int,ndim=1] y):
+    cdef _make_trellis(self, np.ndarray[np.int64_t,ndim=1] x, np.ndarray[np.int64_t,ndim=1] y):
         cdef int m, n, i, j, a, b
         m, n = len(x), len(y)
         cdef np.ndarray[double, ndim=2] trellis = np.zeros([m+1, n+1], dtype=np.float)
@@ -151,7 +152,8 @@ cdef class CythonAlignerImpl:
         return trellis
         
     # @cython.profile
-    cdef _make_trellis_with_endings(self, np.ndarray[int,ndim=1] x, np.ndarray[int,ndim=1] y,
+    cdef _make_trellis_with_endings(self, np.ndarray[np.int64_t,ndim=1] x,
+                                    np.ndarray[np.int64_t,ndim=1] y,
                                     bool to_print=False, object fout=None):
         cdef int i, j, a, b, m, n, pair_code
         cdef double prior = self.prior
@@ -185,15 +187,15 @@ cdef class CythonAlignerImpl:
                 fout.write("\n")
         return root_trellis, ending_trellis, equal_trellis
 
-    cdef list sample_path(self, np.ndarray[int,ndim=1] x, 
-                          np.ndarray[int,ndim=1] y, bool best=False,
+    cdef list sample_path(self, np.ndarray[np.int64_t,ndim=1] x,
+                          np.ndarray[np.int64_t,ndim=1] y, bool best=False,
                           bool to_print=False, object fout=None):
         cdef int n = len(y)
         cdef list path
         cdef np.ndarray[double,ndim=2] trellis
         cdef np.ndarray[double,ndim=2] equal_trellis
         cdef np.ndarray[double,ndim=2] ending_trellis
-        cdef np.ndarray[int, ndim=1] y_low = np.zeros(dtype=int, shape=(n,))
+        cdef np.ndarray[np.int64_t, ndim=1] y_low = np.zeros(dtype=int, shape=(n,))
         # в функцию вычисления решётки нужно передавать индексы
         # без различия корня и окончания
         for i in range(n):
@@ -214,8 +216,8 @@ cdef class CythonAlignerImpl:
         return path
         
     cdef list _sample_path_simple(
-            self, np.ndarray[double,ndim=2] trellis, np.ndarray[int,ndim=1] x,
-            np.ndarray[int,ndim=1] y, bool best=False):
+            self, np.ndarray[double,ndim=2] trellis, np.ndarray[np.int64_t,ndim=1] x,
+            np.ndarray[np.int64_t,ndim=1] y, bool best=False):
         cdef int m, n, i, j, move_key
         cdef list path
         cdef tuple pair
@@ -252,9 +254,10 @@ cdef class CythonAlignerImpl:
     cdef list _sample_path_with_endings(self, np.ndarray[double,ndim=2] root_trellis, 
                                        np.ndarray[double,ndim=2] ending_trellis,
                                        np.ndarray[double,ndim=2] equal_trellis,
-                                       np.ndarray[int,ndim=1] x,  np.ndarray[int,ndim=1] y, 
+                                       np.ndarray[np.int64_t,ndim=1] x,  np.ndarray[np.int64_t,ndim=1] y,
                                        bool best=False, bool to_print=False, object fout=None):
-        cdef int m, n, i, j, s, upper, lower, lower_empty, i_new, j_new
+        cdef int m, n, i, j, s, i_new, j_new
+        cdef np.int64_t upper, lower, lower_empty
         cdef bool is_root
         cdef double insertion_cost, change_cost, removal_cost;
         cdef double total_up_cost, total_diag_cost, total_left_cost;
@@ -369,7 +372,7 @@ cdef class CythonAlignerImpl:
     def fit(self, list X, list pairs, set indexes_to_print=None, int n_iter=-1):
         cdef int i, j, index, pair_code, x, y, k, l
         cdef double t1, t2
-        cdef np.ndarray[int,ndim=1] first, second
+        cdef np.ndarray[np.int64_t,ndim=1] first, second
         cdef np.ndarray[double,ndim=2] trellis
         cdef tuple pair
         cdef list elem, indexes, curr_pairs
@@ -433,7 +436,7 @@ cdef class CythonAlignerImpl:
     cpdef predict(self, list X, set indexes_to_print=None):
         cdef int i
         cdef list answer
-        cdef np.ndarray[int,ndim=1] first, second
+        cdef np.ndarray[np.int64_t,ndim=1] first, second
         cdef object fout=None
         
         answer = [None] * len(X)

@@ -1,68 +1,159 @@
+import os
+import inspect
+import ujson as json
+
+from common import *
+from common_neural import *
+from cells import MultiConv1D, TemporalDropout
+from mcmc_aligner import Aligner, output_alignment
+
+import keras.backend as kb
+if kb.backend() == "tensorflow":
+    from common_tensorflow import *
+else:
+    import theano
+import keras.regularizers as kreg
+from keras.optimizers import adam
+
+def alignment_to_symbols(alignment, reverse=False, append_eow=False):
+    """
+    Преобразует выравнивание в список символов входа и выхода
+
+    :param alignment:
+    :param reverse:
+    :return:
+    """
+    source, target, buffer = [BOW, BOW], [BOW], []
+    curr_upper = BOW
+    if reverse:
+        alignment = alignment[::-1]
+    for i, (x, y) in enumerate(alignment):
+        if x != "":
+            curr_upper = x
+            target.append(STEP)
+            source += [x] * len(buffer)
+            target += buffer
+            source.append(x)
+            buffer = []
+        if y != "":
+            if curr_upper is not None:
+                target.append(y)
+                source.append(curr_upper)
+            else:
+                buffer.append(y)
+        else:
+            curr_upper = None
+    target.append(STEP)
+    source += [EOW] * len(buffer)
+    target += buffer
+    if append_eow:
+        source.append(EOW)
+        target.append(EOW)
+    return source, target
 
 
-class AGInflector:
+def make_alignment_indexes(alignment, reverse=False):
+    """
+    Возвращает массив source_indexes, где source_indexes[i] ---
+    позиция элемента, порождающего i-ый символ target
+
+    :param alignment:
+    :param reverse:
+    :return: source_indexes, list of ints
+    """
+    source, target = alignment_to_symbols(alignment, reverse=reverse, append_eow=True)
+    source_indexes, pos = [0] * len(target), 0
+    for i, a in enumerate(target):
+        source_indexes[i] = pos
+        if a == STEP:
+            pos += 1
+    return source_indexes, target
+
+
+class Inflector:
 
     AUXILIARY = ['PAD', BOW, EOW, 'UNKNOWN']
-    PAD, BEGIN, END, UNKNOWN, STEP_CODE = 0, 1, 2, 3, 4
     UNKNOWN_FEATURE = 0
 
     DEFAULT_ALIGNER_PARAMS = {"init_params": {"gap": 1, "initial_gap": 0}, "n_iter": 5,
                               "init": "lcs", "separate_endings": True}
     MAX_STEPS_NUMBER = 3
 
-    def __init__(self, aligner_params=None, add_no_value=False, use_entire_features=False,
+    def __init__(self, aligner_params=None, use_full_tags=False,
                  models_number=1, buckets_number=10, batch_size=32,
                  nepochs=25, validation_split=0.2, reverse=False,
-                 input_history=5, use_attention=False, input_right_context=0,
-                 output_history=1, separate_symbol_history=False, step_history=1,
-                 use_output_attention=False, history_embedding_size=32,
-                 use_embeddings=False, embeddings_size=8,
-                 use_feature_embeddings=False, feature_embeddings_size=8,
-                 conv_layers=0, conv_size=32, rnn="lstm", rnn_size=32,
-                 output_rnn_size=32, dense_output_size=32,
-                 regularizer="l2", dropout=0.2, callbacks=None,
-                 use_lm=False, min_prob=0.01, max_diff=2.0,
+                 # input_history=5, use_attention=False, input_right_context=0,
+                 # output_history=1, separate_symbol_history=False, step_history=1,
+                 # use_output_attention=False, history_embedding_size=32,
+                 use_embeddings=False, embeddings_size=16,
+                 use_feature_embeddings=False, feature_embeddings_size=16,
+                 conv_layers=0, conv_window=32, conv_filters=5,
+                 rnn="lstm", encoder_rnn_layers=1, encoder_rnn_size=32,
+                 decoder_rnn_size=32, dense_output_size=32,
+                 use_decoder_gate=False,
+                 # regularizer="l2"
+                 conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
+                 history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
+                 callbacks=None,
+                 # use_lm=False, min_prob=0.01, max_diff=2.0,
                  random_state=187, verbose=1):
-        self.add_no_value = add_no_value
-        self.use_entire_features = use_entire_features
+        self.use_full_tags = use_full_tags
         self.models_number = models_number
         self.buckets_number = buckets_number
         self.batch_size = batch_size
         self.nepochs = nepochs
         self.validation_split = validation_split
         self.reverse = reverse
-        self.input_history = input_history
-        self.input_right_context = input_right_context
-        self.use_attention = use_attention
-        self.output_history = output_history
-        self.separate_symbol_history = separate_symbol_history
-        self.step_history = step_history
-        self.use_output_attention = use_output_attention
-        self.history_embedding_size = history_embedding_size
+        # self.input_history = input_history
+        # self.input_right_context = input_right_context
+        # self.use_attention = use_attention
+        # self.output_history = output_history
+        # self.separate_symbol_history = separate_symbol_history
+        # self.step_history = step_history
+        # self.use_output_attention = use_output_attention
+        # self.history_embedding_size = history_embedding_size
         self.use_embeddings = use_embeddings
         self.embeddings_size = embeddings_size
         self.use_feature_embeddings = use_feature_embeddings
         self.feature_embeddings_size = feature_embeddings_size
         self.conv_layers = conv_layers
-        self.conv_size = conv_size
+        self.conv_window = conv_window
+        self.conv_filters = conv_filters
         self.rnn = rnn
-        self.rnn_size = rnn_size
-        self.output_rnn_size = output_rnn_size
+        self.encoder_rnn_layers = encoder_rnn_layers
+        self.encoder_rnn_size = encoder_rnn_size
+        self.decoder_rnn_size = decoder_rnn_size
         self.dense_output_size = dense_output_size
-        self.regularizer = regularizer
+        self.use_decoder_gate = use_decoder_gate
+        # self.regularizer = regularizer
+        self.conv_dropout = conv_dropout
+        self.encoder_rnn_dropout = encoder_rnn_dropout
         self.dropout = dropout
-        self.callbacks = callbacks
-        # декодинг
-        self.use_lm = use_lm
-        self.min_prob = min_prob
-        self.max_diff = max_diff
+        self.history_dropout = history_dropout
+        self.decoder_dropout = decoder_dropout
+        self.regularizer = regularizer
+        self.callbacks = callbacks or []
+        # # декодинг
+        # self.use_lm = use_lm
+        # self.min_prob = min_prob
+        # self.max_diff = max_diff
         # разное
         self.random_state = random_state
         self.verbose = verbose
         # выравнивания
         self._make_aligner(aligner_params)
+        self._initialize()
         # self._initialize_callbacks(model_file)
-        self.new = True
+
+    def _initialize(self):
+        if isinstance(self.conv_window, int):
+            self.conv_window = [self.conv_window]
+        if isinstance(self.conv_filters, int):
+            self.conv_filters = [self.conv_filters]
+        if isinstance(self.rnn, str):
+            self.rnn = getattr(kl, self.rnn.upper())
+        if self.rnn not in [kl.GRU, kl.LSTM]:
+            self.rnn = None
 
     def _make_aligner(self, aligner_params):
         """
@@ -81,9 +172,6 @@ class AGInflector:
         self.build()
         for i in range(self.models_number):
             self.models_[i].load_weights(self._make_model_file(infile, i+1))
-            if self.new:
-                print(self.decoders_[i].layers)
-                sys.exit()
         return self
 
     def to_json(self, outfile, model_file=None):
@@ -91,12 +179,12 @@ class AGInflector:
         if model_file is None:
             pos = outfile.rfind(".")
             model_file = outfile[:pos] + ("-model.hdf5" if pos != -1 else "-model")
-        model_files = [self._make_model_file(model_file, i+1) for i in range(models_number)]
+        model_files = [self._make_model_file(model_file, i+1) for i in range(self.models_number)]
         for i in range(self.models_number):
             model_files[i] = os.path.abspath(model_files[i])
         for (attr, val) in inspect.getmembers(self):
             if not (attr.startswith("__") or inspect.ismethod(val) or
-                    isinstance(getattr(AGInflector, attr, None), property) or
+                    isinstance(getattr(Inflector, attr, None), property) or
                     attr.isupper() or attr in ["callbacks", "models_"]):
                 info[attr] = val
             elif attr == "models_":
@@ -104,15 +192,16 @@ class AGInflector:
                 for model, curr_model_file in zip(self.models_, model_files):
                     model.save_weights(curr_model_file)
             elif attr == "callbacks":
-                for callback in val:
-                    if isinstance(callback, EarlyStopping):
-                        info["early_stopping_callback"] = {"patience": callback.patience,
-                                                           "monitor": callback.monitor}
-                    elif isinstance(callback, ReduceLROnPlateau):
-                        curr_val = dict()
-                        for key in ["patience", "monitor", "factor"]:
-                            curr_val[key] = getattr(callback, key)
-                        info["reduce_LR_callback"] = curr_val
+                raise NotImplementedError
+                # for callback in val:
+                #     if isinstance(callback, EarlyStopping):
+                #         info["early_stopping_callback"] = {"patience": callback.patience,
+                #                                            "monitor": callback.monitor}
+                #     elif isinstance(callback, ReduceLROnPlateau):
+                #         curr_val = dict()
+                #         for key in ["patience", "monitor", "factor"]:
+                #             curr_val[key] = getattr(callback, key)
+                #         info["reduce_LR_callback"] = curr_val
         with open(outfile, "w", encoding="utf8") as fout:
             json.dump(info, fout)
 
@@ -132,90 +221,56 @@ class AGInflector:
         return len(self.symbols_)
 
     @property
-    def labels_number(self):
+    def labels_number_(self):
         return len(self.labels_)
 
     @property
     def feature_vector_size(self):
-        answer = self.labels_number + self.feature_offsets_[-1]
-        if self.use_entire_features:
-            answer += len(self.features_)
-        return answer
-
+        return (self.labels_number_ + len(self.tags_)) if self.use_full_tags else self.labels_number_
 
     def _make_vocabulary(self, X):
-        symbols = {a for first, _, second in X for a in first+second}
+        symbols = {a for first, second, _ in X for a in first+second}
         self.symbols_ = self.AUXILIARY + [STEP] + sorted(symbols)
         self.symbol_codes_ = {a: i for i, a in enumerate(self.symbols_)}
         return self
 
     def _make_features(self, descrs):
         """
-        Extracts possible POS values, feature names and values
-        from the tuples of feature names and feature values
+        Extracts possible POS and feature values
 
         Parameters:
         -----------
-            descrs: list of pairs of tuples,
+            descrs: list of lists,
                 descrs = [descr_1, ..., descr_m],
-                descr = [("pos", cat_1,..., cat_k), (pos, val_1, ..., val_k)]
+                descr = [pos, feat_1, ..., feat_k]
 
         Returns:
         -----------
             self
         """
-        pos_labels = set()
-        feature_values = defaultdict(set)
-        self.features_ = {"UNKNOWN_FEATURE": self.UNKNOWN_FEATURE}
-        for cats, values in descrs:
-            pos_label = values[0]
+        pos_labels, feature_labels, tags = set(), set(), set()
+        for elem in descrs:
+            pos_label = elem[0]
+            curr_feature_labels = {pos_label + "_" + x for x in elem[1:]}
             pos_labels.add(pos_label)
-            for cat, value in zip(cats[1:], values[1:]):
-                cat = "_".join([cat, pos_label])
-                feature_values[cat].add(value)
-            if (cats, values) not in self.features_:
-                self.features_[(cats, values)] = len(self.features_)
-        self.labels_ = self.AUXILIARY + sorted(pos_labels)
+            feature_labels.update(curr_feature_labels)
+            tags.add(tuple(elem))
+        self.labels_ = self.AUXILIARY + sorted(pos_labels) + sorted(feature_labels)
         self.label_codes_ = {x: i for i, x in enumerate(self.labels_)}
-        self.feature_values_, self.feature_codes_ = [], dict()
-        for i, (feat, values) in enumerate(sorted(feature_values.items())):
-            if self.add_no_value:
-                values.add("NO_VALUE")
-            self.feature_values_.append({value: j for j, value in enumerate(values)})
-            self.feature_codes_[feat] = i
-        self.feature_offsets_ = np.concatenate(
-            ([0], np.cumsum([len(x) for x in self.feature_values_], dtype=np.int32)))
-        self.feature_offsets_ = [int(x) for x in self.feature_offsets_]
+        if self.use_full_tags:
+            self.tags_ = sorted(tags)
+            self.tag_codes_ = {x: i for i, x in enumerate(self.tags_)}
         return self
 
     def extract_features(self, descr):
         answer = np.zeros(shape=(self.feature_vector_size,), dtype=np.uint8)
-        cats, values = descr
-        pos_label = values[0]
-        label_code = self.label_codes_.get(pos_label)
-        free_features = set(feature for feature in self.feature_codes_
-                            if feature.split("_")[1] == pos_label)
-        if label_code is not None:
-            answer[label_code] = 1
-            for feature, value in zip(cats[1:], values[1:]):
-                feature = feature + "_" + pos_label
-                free_features.discard(feature)
-                feature_code = self.feature_codes_.get(feature)
-                if feature_code is not None:
-                    value_code = self.feature_values_[feature_code].get(value)
-                    if value_code is not None:
-                        value_code += self.feature_offsets_[feature_code]
-                        answer[value_code + self.labels_number] = 1
-        if self.add_no_value:
-            for feature in free_features:
-                feature_code = self.feature_codes_[feature]
-                value_code = self.feature_values_[feature_code]["NO_VALUE"]
-                value_code += self.feature_offsets_[feature_code]
-                answer[value_code + self.labels_number] = 1
-        if self.use_entire_features:
-            values_encoding_size = self.labels_number + self.feature_offsets_[-1]
-            answer[values_encoding_size+
-                   self.features_.get(descr, self.UNKNOWN_FEATURE)] = 1
+        features = [descr[0]] + ["{}_{}".format(descr[0], x) for x in descr[1:]]
+        feature_codes = [self.label_codes_[x] for x in features if x in self.label_codes_]
+        answer[feature_codes] = 1
+        if self.use_full_tags:
+            code = self.label_codes_.get(tuple(descr))
+            if code is not None:
+                answer[len(self.labels_) + code] = 1
         return answer
 
     def _make_bucket_data(self, lemmas, bucket_length, bucket_indexes):
@@ -231,16 +286,9 @@ class AGInflector:
         return bucket_data
 
     def _make_shifted_output(self, bucket_length, bucket_size, targets=None):
-        answer = np.full(shape=(bucket_size, bucket_length, self.output_history),
-                         fill_value=BEGIN, dtype=int)
+        answer = np.full(shape=(bucket_size, bucket_length), fill_value=BEGIN, dtype=int)
         if targets is not None:
-            for i in range(1, bucket_length):
-                d = i - self.output_history
-                answer[:,i,max(-d,0):] = targets[:,max(d, 0):i]
-        # answers = np.empty(shape=(bucket_size, bucket_length, self.output_history), dtype=int)
-        # answers[:,0] = BEGIN
-        # if targets is not None:
-        #     answers[:,1:] = targets[:,:-1]
+            answer[:,1:] = targets[:, :-1]
         return answer
 
     def _make_steps_shifted_output(self, bucket_length, bucket_size, targets=None):
@@ -280,8 +328,7 @@ class AGInflector:
                                        np.hstack([answer[:,i-1,1:], targets[:,i-1,None]]))
         return answer
 
-    def transform_training_data(self, lemmas, features, letter_positions, targets,
-                                save_bucket_lengths=False):
+    def transform_training_data(self, lemmas, features, letter_positions, targets):
         """
 
         lemmas: list of strs,
@@ -297,56 +344,46 @@ class AGInflector:
                              for lemma, target in zip(lemmas, targets)]
         self.max_length_shift_ = max(0, max([len(target) - 2 * len(lemma)
                                              for lemma, target in zip(lemmas, targets)]))
-        if save_bucket_lengths:
-            self.bucket_lengths_ = make_bucket_lengths(alignment_lengths, self.buckets_number)
-        buckets_with_indexes = collect_buckets(alignment_lengths, self.bucket_lengths_)
+        buckets_with_indexes = collect_buckets(alignment_lengths, self.buckets_number)
         data_by_buckets = [self._make_bucket_data(lemmas, length, indexes)
                            for length, indexes in buckets_with_indexes]
         features_by_buckets = [
-            np.array([self.extract_features(features[i])
-                      for i in bucket_indexes])
+            np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
         targets = np.array([[self.symbol_codes_[x] for x in elem] for elem in targets])
         letter_positions_by_buckets = [
-            _make_table(letter_positions, length, indexes, fill_with_last=True)
+            make_table(letter_positions, length, indexes, fill_with_last=True)
             for length, indexes in buckets_with_indexes]
-        targets_by_buckets = [_make_table(targets, length, indexes, fill_value=PAD)
+        targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
                               for length, indexes in buckets_with_indexes]
-        answer = list(zip(data_by_buckets, features_by_buckets,
-                          letter_positions_by_buckets))
         def _make_bucket_data(func):
             return [func(L, len(indexes), table) for table, (L, indexes)
                     in zip(targets_by_buckets, buckets_with_indexes)]
-        if self.separate_symbol_history:
-            steps_by_buckets = _make_bucket_data(self._make_steps_shifted_output)
-            history_by_buckets = _make_bucket_data(self._make_symbols_shifted_output)
-            for i in range(len(history_by_buckets)):
-                answer[i] += (history_by_buckets[i], steps_by_buckets[i])
-        else:
-            history_by_buckets = _make_bucket_data(self._make_shifted_output)
-            for i in range(len(history_by_buckets)):
-                answer[i] += (history_by_buckets[i],)
-        for i in range(len(history_by_buckets)):
+        history_by_buckets = _make_bucket_data(self._make_shifted_output)
+        answer = list(zip(data_by_buckets, features_by_buckets,
+                          letter_positions_by_buckets, history_by_buckets))
+        for i in range(len(answer)):
             answer[i] += (targets_by_buckets[i],)
         return answer, [elem[1] for elem in buckets_with_indexes]
 
     def _preprocess(self, data, alignments, to_fit=True, alignments_outfile=None):
-        to_align = [(elem[0], elem[2]) for elem in data]
+        to_align = [(elem[0], elem[1]) for elem in data]
         if alignments is None:
             # вычисляем выравнивания
             alignments = self.aligner.align(to_align, to_fit=to_fit)
             if alignments_outfile is not None:
-                output_data(to_align, alignments, alignments_outfile, sep="_")
+                output_alignment(to_align, alignments, alignments_outfile, sep="_")
         elif to_fit:
             self.aligner.align(to_align, to_fit=True, only_initial=True)
-        indexes_with_targets = [make_alignment_indexes(
-            alignment, reverse=self.reverse) for alignment in alignments]
+        indexes_with_targets = [make_alignment_indexes(alignment, reverse=self.reverse)
+                                for alignment in alignments]
         lemmas = [elem[0] for elem in data]
-        features = [elem[1] for elem in data]
+        features = [elem[2] for elem in data]
         letter_indexes = [elem[0] for elem in indexes_with_targets]
         targets = [elem[1] for elem in indexes_with_targets]
-        return self.transform_training_data(
-            lemmas, features, letter_indexes, targets, save_bucket_lengths=to_fit)
+        if self.reverse:
+            lemmas = [x[::-1] for x in lemmas]
+        return self.transform_training_data(lemmas, features, letter_indexes, targets)
 
     def train(self, data, alignments=None, dev_data=None, dev_alignments=None,
               alignments_outfile=None, model_file=None, save_file=None):
@@ -355,8 +392,8 @@ class AGInflector:
         Parameters:
         -----------
             data: list of tuples,
-                data = [(lemma, problem_descr, word), ..]
-                problem_descr = {"pos": pos, feat_1: val_1, ..., feat_d: val_d}
+                data = [(lemma, word, problem_descr), ..]
+                problem_descr = [pos, feat_1, ..., feat_r]
             alignment(optional): list of lists of pairs of strs or None,
                 list of 0-1,1-0,0-0 alignments for each lemma-word pair in data,
                 alignment = [[(i1, o1), ..., (ir, or)], ...]
@@ -367,7 +404,8 @@ class AGInflector:
 
         """
         self._make_vocabulary(data)
-        self._make_features([elem[1] for elem in data])
+        self._make_features([elem[2] for elem in data])
+
         data_by_buckets, buckets_indexes = self._preprocess(
             data, alignments, to_fit=True, alignments_outfile=alignments_outfile)
         if dev_data is not None:
@@ -376,8 +414,8 @@ class AGInflector:
         else:
             dev_data_by_buckets, dev_bucket_indexes = None, None
         self.build()
-        if save_file is not None:
-            self.to_json(save_file, model_file)
+        # if save_file is not None:
+        #     self.to_json(save_file, model_file)
         self._train_model(data_by_buckets, X_dev=dev_data_by_buckets, model_file=model_file)
         return self
 
@@ -436,150 +474,104 @@ class AGInflector:
             print(self.models_[0].summary())
         return self
 
+    def _build_word_network(self, inputs):
+        if self.use_embeddings:
+            embedding = kl.Embedding(self.symbols_number, self.embeddings_size)
+        else:
+            embedding = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
+                                  output_shape=(None, self.symbols_number))
+        outputs = embedding(inputs)
+        if self.conv_layers > 0:
+            outputs = MultiConv1D(outputs, self.conv_layers, self.conv_window,
+                                  self.conv_filters, self.conv_dropout, activation="relu")
+        if self.encoder_rnn_layers > 0:
+            for i in range(self.encoder_rnn_layers):
+                outputs = kl.Bidirectional(kl.LSTM(self.encoder_rnn_size,
+                                                   dropout=self.encoder_rnn_dropout,
+                                                   return_sequences=True))(outputs)
+        return outputs
+
+    @property
+    def symbol_outputs_dim(self):
+        if self.encoder_rnn_layers > 0:
+            return 2 * self.encoder_rnn_size
+        else:
+            return sum(self.conv_filters)
+
+    def _build_alignment(self, inputs, indexes, dropout=0.0):
+        if kb.backend() == "tensorflow":
+            indexing_function = gather_indexes
+        lambda_func = kl.Lambda(indexing_function, output_shape=lambda x:x[0])
+        answer = lambda_func([inputs,  indexes])
+        if dropout > 0.0:
+            answer = kl.Dropout(dropout)(answer)
+        return answer
+
+    def _build_feature_network(self, inputs, k):
+        if self.use_feature_embeddings:
+            inputs = kl.Dense(self.feature_embeddings_size,
+                              input_shape=(self.feature_vector_size,),
+                              activation="relu", use_bias=False)(inputs)
+        def tiling_func(x):
+            x = kb.expand_dims(x, 1)
+            return kb.tile(x, [1, k, 1])
+        answer = kl.Lambda(tiling_func, output_shape=(lambda x: (None,) + x))(inputs)
+        answer = kl.Lambda(kb.cast, arguments={"dtype": "float32"})(answer)
+        return answer
+
+    def _build_history_network(self, inputs):
+        outputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
+                            output_shape=(None, self.symbols_number))(inputs)
+        if self.history_dropout > 0.0:
+            outputs = TemporalDropout(outputs, self.history_dropout)
+        return outputs
+
+    def _build_decoder_network(self, inputs, source):
+        inputs = kl.Concatenate()(inputs)
+        decoder_outputs = kl.LSTM(self.decoder_rnn_size, return_sequences=True,
+                                 dropout=self.decoder_dropout)(inputs)
+        pre_outputs = kl.TimeDistributed(kl.Dense(
+            self.dense_output_size, activation="relu", use_bias=False,
+            input_shape=(self.decoder_rnn_size,)))(decoder_outputs)
+        outputs = kl.TimeDistributed(kl.Dense(
+            self.symbols_number, activation="softmax", name="outputs",
+            activity_regularizer=kreg.l2(self.regularizer),
+            input_shape=(self.dense_output_size,)))(pre_outputs)
+        if self.use_decoder_gate:
+            gate_inputs = kl.Concatenate()([inputs, decoder_outputs])
+            gate_outputs = kl.Dense(1, activation="sigmoid")(gate_inputs)
+            source_inputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
+                                      output_shape=(lambda x: x + (self.symbols_number,)))(source)
+            outputs = kl.Lambda(gated_sum, output_shape=(lambda x:x[0]))([source_inputs, outputs, gate_outputs])
+        return outputs
+
     def _build_model(self):
-        RNN = kl.GRU if self.rnn.lower() == "gru" else kl.LSTM
         # входные данные
         symbol_inputs = kl.Input(name="symbol_inputs", shape=(None,), dtype='uint8')
         feature_inputs = kl.Input(
             shape=(self.feature_vector_size,), name="feature_inputs", dtype='uint8')
-        letter_indexes_inputs = kl.Input(shape=(None,), dtype='uint8')
+        symbol_outputs = self._build_word_network(symbol_inputs)
+        letter_indexes_inputs = kl.Input(shape=(None,), dtype='int32')
+        aligned_symbol_outputs = self._build_alignment(
+            symbol_outputs, letter_indexes_inputs, dropout=self.dropout)
+        aligned_inputs = self._build_alignment(symbol_inputs, letter_indexes_inputs)
         shifted_target_inputs = kl.Input(
-            shape=(None, self.output_history), name="shifted_target_inputs", dtype='uint8')
+            shape=(None,), name="shifted_target_inputs", dtype='uint8')
         inputs = [symbol_inputs, feature_inputs,
                   letter_indexes_inputs, shifted_target_inputs]
-        if self.separate_symbol_history:
-            step_target_inputs = kl.Input(shape=(None, self.step_history),
-                                          name="step_target_inputs", dtype='uint8')
-            inputs.append(step_target_inputs)
         # буквы входного слова
-        if self.use_embeddings:
-            embedding = kl.Embedding(self.symbols_number, self.embeddings_size,
-                                     embeddings_regularizer=self.regularizer)
-        else:
-            embedding = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
-                                  output_shape=(None, self.symbols_number))
-        embedded_inputs = embedding(symbol_inputs)
-        lstm_outputs = kl.Bidirectional(RNN(self.rnn_size, return_sequences=True),
-                                        name="lstm_outputs")(embedded_inputs)
-        lstm_outputs_size = 2 * self.rnn_size
-        # сохраняем кодировщик
-        # здесь надо задать форму матрицы индексов
-        def indexing_function(x):
-            A, B = x[0], x[1]
-            C = A[kb.arange(A.shape[0]).reshape((-1,1)), B]
-            return C
-        lambda_func = kl.Lambda(indexing_function,
-                                input_shape=[(None, lstm_outputs_size), (None,)],
-                                output_shape=(None, lstm_outputs_size),
-                                name="aligned_lstm_outputs")
-        aligned_lstm_outputs = lambda_func([lstm_outputs,  letter_indexes_inputs])
-        if self.dropout > 0.0:
-            to_decoder = kl.Dropout(self.dropout)(aligned_lstm_outputs)
-        else:
-            to_decoder = aligned_lstm_outputs
-        # признаки
-        if self.use_feature_embeddings:
-            feature_embeddings = kl.Dense(
-                self.feature_embeddings_size, input_shape=(self.feature_vector_size,),
-                activation="relu", use_bias=False)(feature_inputs)
-            feature_inputs_length = self.feature_embeddings_size
-        else:
-            feature_embeddings = feature_inputs
-            feature_inputs_length = self.feature_vector_size
-        feature_embeddings = kl.Lambda(
-            repeat_, arguments={"k": aligned_lstm_outputs.shape[1]},
-            output_shape=(None, feature_inputs_length))(feature_embeddings)
-        to_concatenate = [to_decoder, feature_embeddings]
-        if not self.use_output_attention:
-            # строим функцию, готовящую истории
-            shifted_outputs = kl.Lambda(
-                kb.one_hot, arguments={"num_classes": self.symbols_number},
-                output_shape=(None, self.output_history, self.symbols_number))(shifted_target_inputs)
-            lambda_func = kl.Lambda(
-                kb.flatten, output_shape=(self.output_history*self.symbols_number,))
-            shifted_outputs = kl.TimeDistributed(lambda_func)(shifted_outputs)
-            # shifted_outputs = kl.TimeDistributed(history_preparation_layer)(shifted_target_inputs)
-            to_concatenate.append(shifted_outputs)
-            if self.separate_symbol_history:
-                to_concatenate.append(step_target_inputs)
-        else:
-            raise NotImplementedError
-            # outputs_encoding = RNN(self.history_embedding_size,
-            #                        return_sequences=True)(shifted_outputs)
-            # if self.dropout > 0.0:
-            #     outputs_encoding = kl.Dropout(self.dropout)(outputs_encoding)
-            # shifted_outputs = HistoryAttention(
-            #     shifted_target_inputs, outputs_encoding, self.output_history,
-            #     self.symbols_number, self.history_embedding_size)
-            # shifted_outputs_size = 2 * self.history_embedding_size
-        # соединяем всё
-        decoder_inputs = kl.Concatenate(name="decoder_inputs")(to_concatenate)
-        if self.new:
-            dsh_lstm_params = {"dense_units": self.dense_output_size,
-                               "dense_activation": "tanh", "output_dropout": self.dropout}
-            decoder_layer = DSH_LSTM(
-                self.output_rnn_size, self.symbols_number, name="outputs",
-                return_sequences=True, activity_regularizer=keras.regularizers.l2(0.0001),
-                **dsh_lstm_params)
-            outputs = decoder_layer(decoder_inputs)
-        else:
-            decoder_outputs = RNN(self.output_rnn_size, return_sequences=True)(decoder_inputs)
-            if self.dropout > 0.0:
-                decoder_outputs = kl.Dropout(self.dropout)(decoder_outputs)
-            decoder_outputs = kl.TimeDistributed(kl.Dense(
-                self.dense_output_size, activation="tanh", use_bias=False,
-                input_shape=(self.output_rnn_size,)))(decoder_outputs)
-            outputs = kl.TimeDistributed(kl.Dense(
-                self.symbols_number, activation="softmax", name="outputs",
-                activity_regularizer=keras.regularizers.l2(0.0001),
-                input_shape=(self.dense_output_size,)))(decoder_outputs)
+        tiled_feature_inputs = self._build_feature_network(
+            feature_inputs, kb.shape(aligned_symbol_outputs)[1])
+        # to_concatenate = [aligned_symbol_outputs, tiled_feature_inputs]
+        shifted_outputs = self._build_history_network(shifted_target_inputs)
+        to_decoder = [aligned_symbol_outputs, tiled_feature_inputs, shifted_outputs]
+        outputs = self._build_decoder_network(to_decoder, aligned_inputs)
         model = Model(inputs, outputs)
         model.compile(optimizer=adam(clipnorm=5.0),
                       loss="categorical_crossentropy", metrics=["accuracy"])
-        # for i, layer in enumerate(model.layers):
-        #     print("Layer {}:".format(i), layer.name)
-        #     # theano.printing.debugprint(layer.input)
-        #     theano.printing.debugprint(layer.output)
-        #     print("")
-        # sys.exit()
-        encoder = kb.function([symbol_inputs], [lstm_outputs])
-        decoder_inputs = [aligned_lstm_outputs, feature_inputs, shifted_target_inputs]
-        if self.separate_symbol_history:
-            decoder_inputs.append(step_target_inputs)
-        # symbol_inputs нужно, чтобы не возникала ошибка в dropout
-        if self.new:
-            # args = decoder_inputs + [symbol_inputs, letter_indexes_inputs, kb.learning_phase()]
-            # cell inputs
-            cell_lstm_outputs = kl.Input(
-                shape=(lstm_outputs_size,), name="cell_lstm_outputs", dtype='float32')
-            cell_feature_embeddings = kl.Input(
-                shape=(feature_inputs_length,), name="cell_feature_embeddings", dtype='float32')
-            cell_shifted_answers = kl.Input(
-                shape=(self.output_history,), name="cell_shifted_answers", dtype='uint8')
-            cell_inputs = [cell_lstm_outputs, cell_feature_embeddings, cell_shifted_answers]
-            if self.separate_symbol_history:
-                cell_shifted_steps = kl.Input(
-                    shape=(self.step_history,), name="cell_shifted_steps", dtype='uint8')
-                cell_inputs.append(cell_shifted_steps)
-            # history embeddings
-            history_preparation_layer =\
-                kl.Lambda(flattened_one_hot,
-                          arguments={"num_classes": self.symbols_number},
-                          output_shape=(self.output_history*self.symbols_number,))
-            cell_history = history_preparation_layer(cell_shifted_answers)
-            cell_to_concatenate = cell_inputs[:]
-            cell_to_concatenate[2] = cell_history
-            cell_to_decoder = kl.Concatenate()(cell_to_concatenate)
-            # состояния LSTM с предыдущего шага
-            cell_h_state = kl.Input(shape=(self.output_rnn_size,), dtype='float32')
-            cell_c_state = kl.Input(shape=(self.output_rnn_size,), dtype='float32')
-            cell_states = [cell_h_state, cell_c_state]
-            cell = DSH_LSTMCell(self.output_rnn_size, self.symbols_number, **dsh_lstm_params)
-            cell_outputs = DSH_LSTMCellWrapper(cell, name="cell")(cell_to_decoder, states=cell_states)
-            decoder = Model(cell_inputs + cell_states, cell_outputs)
-        else:
-            args = decoder_inputs + [kb.learning_phase()]
-            decoder = kb.function(args, [outputs])
+        encoder = kb.function([symbol_inputs], [symbol_outputs])
+        decoder_inputs = [aligned_symbol_outputs, feature_inputs, shifted_target_inputs]
+        decoder = kb.function(decoder_inputs + [kb.learning_phase()], [outputs])
         return model, encoder, decoder
 
     def _prepare_for_prediction(self, words, features,
@@ -587,7 +579,7 @@ class AGInflector:
         encoded_words = np.array(
             [([BEGIN] + [self.symbol_codes_.get(
                 x, UNKNOWN) for x in word] + [END]) for word in words])
-        encoded_words_by_buckets = [_make_table(encoded_words, length, indexes, fill_value=PAD)
+        encoded_words_by_buckets = [make_table(encoded_words, length, indexes, fill_value=PAD)
                                     for length, indexes in buckets_with_indexes]
         # представления входных слов после lstm
         # encoder_outputs_by_buckets[i].shape = (self.models, lengths[i])
@@ -596,28 +588,20 @@ class AGInflector:
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
-        if self.separate_symbol_history:
-            steps_by_buckets = [self._make_steps_shifted_output(L, len(indexes))
-                                for (L, indexes) in buckets_with_indexes]
-            shifted_targets_by_buckets = [self._make_symbols_shifted_output(L, len(indexes))
-                                          for (L, indexes) in buckets_with_indexes]
-        else:
-            shifted_targets_by_buckets = [self._make_shifted_output(L, len(indexes))
-                                          for (L, indexes) in buckets_with_indexes]
+        shifted_targets_by_buckets = [self._make_shifted_output(L, len(indexes))
+                                      for (L, indexes) in buckets_with_indexes]
         if known_answers is not None:
             encoded_answers = np.array([([BEGIN] +
                                          [self.symbol_codes_.get(x, UNKNOWN) for x in word] +
                                          [END]) for word in known_answers])
             encoded_answers_by_buckets = [
-                _make_table(encoded_answers, length, indexes, fill_value=PAD)
+                make_table(encoded_answers, length, indexes, fill_value=PAD)
                 for length, indexes in buckets_with_indexes]
         else:
             encoded_answers_by_buckets = [None] * len(buckets_with_indexes)
         # predictions = [(words_1, probs_1), ..., (words_m, probs_m)]
         inputs = [encoder_outputs_by_buckets, features_by_buckets,
                   shifted_targets_by_buckets]
-        if self.separate_symbol_history:
-            inputs.append(steps_by_buckets)
         return inputs, encoded_words_by_buckets, encoded_answers_by_buckets
 
     def predict(self, data, known_answers=None, return_alignment_positions=False,
@@ -633,10 +617,9 @@ class AGInflector:
         ----------
             answer: a list of strs
         """
-        words, features = [elem[0] for elem in data], [elem[1] for elem in data]
+        words, features = [elem[0] for elem in data], [elem[2] for elem in data]
         output_lengths = [(2 * len(x) + self.max_length_shift_ + 3) for x in words]
-        buckets_with_indexes = collect_buckets(
-            output_lengths, self.bucket_lengths_, max_bucket_size=64)
+        buckets_with_indexes = collect_buckets(output_lengths, max_bucket_size=64)
         inputs, encoded_words_by_buckets, encoded_answers_by_buckets =\
             self._prepare_for_prediction(words, features, buckets_with_indexes, known_answers)
         answer = [[] for _ in words]
@@ -644,9 +627,8 @@ class AGInflector:
             if verbose > 0:
                 print("Bucket {} of {} predicting".format(
                     bucket_number+1, len(buckets_with_indexes)))
-            steps_history = elem[3] if self.separate_symbol_history else None
             bucket_words, bucket_probs = self._predict_on_batch(
-                elem[0], elem[1], elem[2], steps_history, beam_width=beam_width,
+                elem[0], elem[1], elem[2], beam_width=beam_width,
                 known_answers=encoded_answers_by_buckets[bucket_number],
                 source=encoded_words_by_buckets[bucket_number])
             _, bucket_indexes = buckets_with_indexes[bucket_number]
@@ -712,10 +694,6 @@ class AGInflector:
             steps_history = np.repeat(steps_history, beam_width, axis=0)
         if source is not None:
             source = np.repeat(source, beam_width, axis=0)
-        if self.new:
-            # начальные состояния lstm. Они различны для каждой модели
-            h_states = np.zeros(shape=(M, self.models_number, self.output_rnn_size))
-            c_states = np.zeros(shape=(M, self.models_number, self.output_rnn_size))
         for i in range(L):
             # текущие символы
             curr_symbols = symbols[:, np.arange(M) // beam_width, positions,:]

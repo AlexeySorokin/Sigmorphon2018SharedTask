@@ -316,7 +316,7 @@ def read_infile(infile):
     return answer
 
 
-def output_data(words, alignments, outfile, sep="-"):
+def output_alignment(words, alignments, outfile, sep="-"):
     with open(outfile, "w", encoding="utf8") as fout:
         for (first, second), alignment in zip(words, alignments):
             fout.write("{}\t{}\n{}\n".format(

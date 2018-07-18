@@ -1,0 +1,4 @@
+{
+  "model": {"nepochs": 100, "conv_layers": 0, "encoder_rnn_layers": 2, "encoder_rnn_size": 64, "decoder_rnn_size": 64,
+            "use_decoder_gate": true, "encoder_rnn_dropout": 0.2}
+}
