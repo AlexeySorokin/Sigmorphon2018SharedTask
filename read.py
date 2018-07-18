@@ -23,6 +23,7 @@ def read_infile(infile):
             splitted = line.strip().split("\t")
             if len(splitted) != 3:
                 continue
+            splitted[2] = splitted[2].split(";")
             answer.append(splitted)
     return answer
 
