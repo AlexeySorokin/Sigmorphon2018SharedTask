@@ -30,7 +30,7 @@ cdef extern from "aligner.cpp" :
     void fill_trellis_2(double* trellis_root, double* trellis_ending,
                         double* trellis_equal, int* first, int* second, 
                         double* counts, int total_count, int total_number, 
-                        double prior, int symbols_number, int m, int n)
+                        double prior, int symbols_number, int m, int n, int to_print)
     int draw_sample(double, double, double, int)
     int draw_sample2(double, double, int)
 
@@ -166,10 +166,12 @@ cdef class CythonAlignerImpl:
             np.zeros(dtype=np.float, shape=((self.max_code+1)*self.codes_number,))
         counts[:] = self.counts
         
+        if to_print:
+            print(x, y)
         fill_trellis_2(<double*>root_trellis.data, <double*>ending_trellis.data,
                        <double*>equal_trellis.data, <int*>x.data, <int*>y.data,
                        <double*>counts.data, self.total_count, self.pairs_number,
-                       prior, self.max_code, m, n)
+                       prior, self.max_code, m, n, int(to_print))
         if to_print:
             fout.write("\n{} {}\n".format(",".join([str(a) for a in list(x)]), 
                                           ",".join([str(b) for b in list(y)])))

@@ -69,7 +69,8 @@ if __name__ == "__main__":
             inflector = Inflector(**params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
-            inflector.train(data, dev_data=dev_data, save_file=save_file)
+            inflector.train(data, dev_data=dev_data, save_file=save_file,
+                            alignments_outfile="alignments-{}.out".format(filename))
         if to_test:
             answer = inflector.predict(data[:10], **params["predict"])
             outfile = os.path.join(out_dir, filename) if out_dir is not None else None

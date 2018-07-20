@@ -118,7 +118,7 @@ double _get_cost(int x, int y, ForCostParameters data)
     int pair_code = -1;
     
     // max_code --- максимальное разрешённое значение x
-    // row_length-1 --- максимальное разрешённое значение x
+    // row_length-1 --- максимальное разрешённое значение y
     if (x < data.max_code && y < data.row_length - 1)
         pair_code = make_pair_code(x, y, data.max_code+1, data.row_length);
     else
@@ -213,8 +213,23 @@ void fill_trellis(double* change_costs, double* insertion_costs,
 void fill_trellis_2(double* trellis_root, double* trellis_ending,
                     double* trellis_equal, int* first, int* second, 
                     double* counts, int total_count, int total_number, 
-                    double prior, int symbols_number, int m, int n)
+                    double prior, int symbols_number, int m, int n,
+                    int to_print)
 {
+    if (to_print)
+    {
+        for (int i = 0; i < m; ++i)
+        {
+            cerr << first[i] << " ";
+        }
+        cerr << "\n";
+        for (int i = 0; i < n; ++i)
+        {
+            cerr << second[i] << " ";
+        }
+        cerr << "\n";
+    }
+
     int row_length = 2 * symbols_number + 1;  // длина строки в матрице счётчиков
     ForCostParameters data = ForCostParameters(
         symbols_number, row_length, counts, total_count, total_number, prior);

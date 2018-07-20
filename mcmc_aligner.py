@@ -149,12 +149,13 @@ class AlignerImpl:
 
 class Aligner:
 
-    def __init__(self, n_iter=10,
-                 prior=0.1, init="greedy", init_params=None,
-                 separate_endings=False, verbose=1, random_state=422):
+    def __init__(self, n_iter=10, prior=0.1, init="greedy", init_params=None,
+                 separate_endings=False,
+                 words_to_debug=None, verbose=1, random_state=422):
         self.init = init
         self.init_params = init_params
         self.separate_endings = separate_endings
+        self.words_to_debug = words_to_debug or set()
         self.verbose = verbose
         self._aligner = CythonAlignerImpl(
             n_iter, prior, separate_endings, verbose, random_state)
@@ -273,6 +274,7 @@ class Aligner:
             words = set()
         else:
             words = set(words)
+        words |= set(self.words_to_debug)
         word_indexes = []
         for i, (first, second) in enumerate(X):
             if second in set(words):

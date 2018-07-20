@@ -471,6 +471,7 @@ class Inflector:
 
         data_by_buckets, buckets_indexes = self._preprocess(
             data, alignments, to_fit=True, alignments_outfile=alignments_outfile)
+        sys.exit()
         if dev_data is not None:
             dev_data_by_buckets, dev_bucket_indexes =\
                 self._preprocess(dev_data, dev_alignments, to_fit=False)
