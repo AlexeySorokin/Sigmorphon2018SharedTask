@@ -4,16 +4,18 @@ import ujson as json
 
 from common import *
 from common_neural import *
-from cells import MultiConv1D, TemporalDropout
+from cells import MultiConv1D, TemporalDropout, History
 from mcmc_aligner import Aligner, output_alignment
 
 import keras.backend as kb
 if kb.backend() == "tensorflow":
     from common_tensorflow import *
 else:
-    import theano
+    raise NotImplementedError
 import keras.regularizers as kreg
 from keras.optimizers import adam
+import keras.callbacks as kcall
+from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
 
 def alignment_to_symbols(alignment, reverse=False, append_eow=False):
     """
@@ -70,6 +72,67 @@ def make_alignment_indexes(alignment, reverse=False):
     return source_indexes, target
 
 
+def extend_history(histories, hyps, indexes, start=0, pos=None,
+                   history_pos=0, value=None, func="append", **kwargs):
+    """
+    Updates histories with given indexes by a selected element
+    of corresponding hypotheses. Schematically,
+        histories[indexes[j]] = update_func(histories[indexes[j]], hyps[j][pos]),
+        j = 0, ..., len(indexes) - 1
+    :param histories:
+    :param hyps:
+    :param indexes:
+    :param start:
+    :param pos:
+    :param history_pos:
+    :param value:
+    :param func:
+    :param kwargs:
+    :return:
+    """
+    to_append = ([elem[pos] for elem in hyps] if (value is None) else ([value] * len(hyps)))
+    if func == "append":
+        func = lambda x, y: x + [y]
+    elif func == "sum":
+        func = lambda x, y: x + y
+    elif func == "change":
+        func = lambda x, y: y
+    elif func == "append_truncated":
+        func = lambda x, y: np.concatenate([x[1:], [y]])
+    elif not callable(func):
+        raise ValueError("func must be 'append', 'sum' or a callable object")
+    group_histories = [func(histories[elem[history_pos]], value)
+                       for elem, value in zip(hyps, to_append)]
+    for i, index in enumerate(indexes):
+        histories[start+index] = group_histories[i]
+    return
+
+
+def load_inflector(infile):
+    with open(infile, "r", encoding="utf8") as fin:
+        json_data = json.load(fin)
+    args = {key: value for key, value in json_data.items()
+            if not (key.endswith("_") or key.endswith("callback") or key == "model_files")}
+    # коллбэки
+    args['callbacks'] = []
+    for key, cls in zip(["early_stopping_callback", "reduce_LR_callback"],
+                        [EarlyStopping, ReduceLROnPlateau]):
+        if key in json_data:
+            args['callbacks'].append(cls(**json_data[key]))
+    # создаём языковую модель
+    inflector = Inflector(**args)
+    # обучаемые параметры
+    args = {key: value for key, value in json_data.items() if key[-1] == "_"}
+    for key, value in args.items():
+        setattr(inflector, key, value)
+    # модель
+    inflector.build()  # не работает сохранение модели, приходится сохранять только веса
+    for i, (model, model_file) in enumerate(
+            zip(inflector.models_, json_data['model_files'])):
+        model.load_weights(model_file)
+    return inflector
+
+
 class Inflector:
 
     AUXILIARY = ['PAD', BOW, EOW, 'UNKNOWN']
@@ -82,8 +145,9 @@ class Inflector:
     def __init__(self, aligner_params=None, use_full_tags=False,
                  models_number=1, buckets_number=10, batch_size=32,
                  nepochs=25, validation_split=0.2, reverse=False,
-                 # input_history=5, use_attention=False, input_right_context=0,
-                 # output_history=1, separate_symbol_history=False, step_history=1,
+                 input_history=1, # use_attention=False, input_right_context=0,
+                 output_history=1, use_output_embeddings=False, output_embeddings_size=16,
+                 # separate_symbol_history=False, step_history=1,
                  # use_output_attention=False, history_embedding_size=32,
                  use_embeddings=False, embeddings_size=16,
                  use_feature_embeddings=False, feature_embeddings_size=16,
@@ -95,7 +159,7 @@ class Inflector:
                  conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
                  history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
                  callbacks=None,
-                 # use_lm=False, min_prob=0.01, max_diff=2.0,
+                 use_lm=False, min_prob=0.01, max_diff=2.0,
                  random_state=187, verbose=1):
         self.use_full_tags = use_full_tags
         self.models_number = models_number
@@ -104,10 +168,12 @@ class Inflector:
         self.nepochs = nepochs
         self.validation_split = validation_split
         self.reverse = reverse
-        # self.input_history = input_history
+        self.input_history = input_history
         # self.input_right_context = input_right_context
         # self.use_attention = use_attention
-        # self.output_history = output_history
+        self.output_history = output_history
+        self.use_output_embeddings = use_feature_embeddings
+        self.output_embeddings_size = output_embeddings_size
         # self.separate_symbol_history = separate_symbol_history
         # self.step_history = step_history
         # self.use_output_attention = use_output_attention
@@ -132,20 +198,19 @@ class Inflector:
         self.history_dropout = history_dropout
         self.decoder_dropout = decoder_dropout
         self.regularizer = regularizer
-        self.callbacks = callbacks or []
         # # декодинг
-        # self.use_lm = use_lm
-        # self.min_prob = min_prob
-        # self.max_diff = max_diff
+        self.use_lm = use_lm
+        self.min_prob = min_prob
+        self.max_diff = max_diff
         # разное
         self.random_state = random_state
         self.verbose = verbose
         # выравнивания
         self._make_aligner(aligner_params)
-        self._initialize()
+        self._initialize(callbacks)
         # self._initialize_callbacks(model_file)
 
-    def _initialize(self):
+    def _initialize(self, callbacks=None):
         if isinstance(self.conv_window, int):
             self.conv_window = [self.conv_window]
         if isinstance(self.conv_filters, int):
@@ -154,6 +219,8 @@ class Inflector:
             self.rnn = getattr(kl, self.rnn.upper())
         if self.rnn not in [kl.GRU, kl.LSTM]:
             self.rnn = None
+        callbacks = callbacks or dict()
+        self.callbacks = [getattr(kcall, key)(**params) for key, params in callbacks.items()]
 
     def _make_aligner(self, aligner_params):
         """
@@ -174,34 +241,30 @@ class Inflector:
             self.models_[i].load_weights(self._make_model_file(infile, i+1))
         return self
 
-    def to_json(self, outfile, model_file=None):
+    def to_json(self, outfile, model_file):
         info = dict()
-        if model_file is None:
-            pos = outfile.rfind(".")
-            model_file = outfile[:pos] + ("-model.hdf5" if pos != -1 else "-model")
         model_files = [self._make_model_file(model_file, i+1) for i in range(self.models_number)]
         for i in range(self.models_number):
             model_files[i] = os.path.abspath(model_files[i])
         for (attr, val) in inspect.getmembers(self):
             if not (attr.startswith("__") or inspect.ismethod(val) or
                     isinstance(getattr(Inflector, attr, None), property) or
-                    attr.isupper() or attr in ["callbacks", "models_"]):
+                    attr.isupper() or attr in ["callbacks", "models_", "aligner", "encoders_", "decoders_"]):
                 info[attr] = val
             elif attr == "models_":
                 info["model_files"] = model_files
                 for model, curr_model_file in zip(self.models_, model_files):
                     model.save_weights(curr_model_file)
             elif attr == "callbacks":
-                raise NotImplementedError
-                # for callback in val:
-                #     if isinstance(callback, EarlyStopping):
-                #         info["early_stopping_callback"] = {"patience": callback.patience,
-                #                                            "monitor": callback.monitor}
-                #     elif isinstance(callback, ReduceLROnPlateau):
-                #         curr_val = dict()
-                #         for key in ["patience", "monitor", "factor"]:
-                #             curr_val[key] = getattr(callback, key)
-                #         info["reduce_LR_callback"] = curr_val
+                callback_info = dict()
+                for callback in val:
+                    if isinstance(callback, EarlyStopping):
+                        callback_info["EarlyStopping"] =\
+                            {key: getattr(callback, key) for key in ["patience", "monitor", "min_delta"]}
+                    elif isinstance(callback, ReduceLROnPlateau):
+                        callback_info["ReduceLROnPlateau"] = \
+                            {key: getattr(callback, key) for key in ["patience", "monitor", "factor"]}
+                info["callbacks"] = callback_info
         with open(outfile, "w", encoding="utf8") as fout:
             json.dump(info, fout)
 
@@ -386,7 +449,7 @@ class Inflector:
         return self.transform_training_data(lemmas, features, letter_indexes, targets)
 
     def train(self, data, alignments=None, dev_data=None, dev_alignments=None,
-              alignments_outfile=None, model_file=None, save_file=None):
+              alignments_outfile=None, save_file=None, model_file=None):
         """
 
         Parameters:
@@ -413,9 +476,13 @@ class Inflector:
                 self._preprocess(dev_data, dev_alignments, to_fit=False)
         else:
             dev_data_by_buckets, dev_bucket_indexes = None, None
-        self.build()
-        # if save_file is not None:
-        #     self.to_json(save_file, model_file)
+        if not hasattr(self, "built_"):
+            self.build()
+            if save_file is not None:
+                if model_file is None:
+                    pos = save_file.rfind(".") if "." in save_file else len(save_file)
+                    model_file = save_file[:pos] + "-model.hdf5"
+                self.to_json(save_file, model_file)
         self._train_model(data_by_buckets, X_dev=dev_data_by_buckets, model_file=model_file)
         return self
 
@@ -470,8 +537,17 @@ class Inflector:
         self.decoders_ = [None] * self.models_number
         for i in range(self.models_number):
             self.models_[i], self.encoders_[i], self.decoders_[i] = self._build_model()
+        self.built_ = "train"
         if self.verbose > 0:
             print(self.models_[0].summary())
+        return self
+
+    def rebuild_test(self):
+        for i, model in enumerate(self.models_):
+            weights = model.get_weights()
+            self.models_[i], self.encoders_[i], self.decoders_[i] = self._build_model(test=True)
+            self.models_[i].set_weights(weights)
+        self.built_ = "test"
         return self
 
     def _build_word_network(self, inputs):
@@ -509,6 +585,7 @@ class Inflector:
 
     def _build_feature_network(self, inputs, k):
         if self.use_feature_embeddings:
+            inputs = kl.Lambda(kb.cast, arguments={"dtype": "float32"})(inputs)
             inputs = kl.Dense(self.feature_embeddings_size,
                               input_shape=(self.feature_vector_size,),
                               activation="relu", use_bias=False)(inputs)
@@ -519,17 +596,27 @@ class Inflector:
         answer = kl.Lambda(kb.cast, arguments={"dtype": "float32"})(answer)
         return answer
 
-    def _build_history_network(self, inputs):
-        outputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
-                            output_shape=(None, self.symbols_number))(inputs)
+    def _build_history_network(self, inputs, only_last=False):
+        if self.use_output_embeddings:
+            inputs = kl.Lambda(kb.cast, arguments={"dtype": "float32"})(inputs)
+            outputs = kl.Embedding(self.symbols_number, self.output_embeddings_size)(inputs)
+        else:
+            outputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
+                                output_shape=(None, self.symbols_number))(inputs)
         if self.history_dropout > 0.0:
             outputs = TemporalDropout(outputs, self.history_dropout)
+        if self.output_history > 1 or only_last:
+            outputs = History(outputs, self.output_history, flatten=True, only_last=only_last)
         return outputs
 
     def _build_decoder_network(self, inputs, source):
         inputs = kl.Concatenate()(inputs)
-        decoder_outputs = kl.LSTM(self.decoder_rnn_size, return_sequences=True,
-                                 dropout=self.decoder_dropout)(inputs)
+        decoder = kl.LSTM(self.decoder_rnn_size, dropout=self.decoder_dropout,
+                          return_sequences=True, return_state=True)
+        initial_states = [kb.zeros_like(inputs[:,0,0]), kb.zeros_like(inputs[:,0,0])]
+        for i, elem in enumerate(initial_states):
+            initial_states[i] = kb.tile(elem[:,None], [1, self.decoder_rnn_size])
+        decoder_outputs, final_h_states, final_c_states = decoder(inputs, initial_state=initial_states)
         pre_outputs = kl.TimeDistributed(kl.Dense(
             self.dense_output_size, activation="relu", use_bias=False,
             input_shape=(self.decoder_rnn_size,)))(decoder_outputs)
@@ -543,35 +630,38 @@ class Inflector:
             source_inputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
                                       output_shape=(lambda x: x + (self.symbols_number,)))(source)
             outputs = kl.Lambda(gated_sum, output_shape=(lambda x:x[0]))([source_inputs, outputs, gate_outputs])
-        return outputs
+        return outputs, initial_states, [final_h_states, final_c_states]
 
-    def _build_model(self):
+    def _build_model(self, test=False):
         # входные данные
-        symbol_inputs = kl.Input(name="symbol_inputs", shape=(None,), dtype='uint8')
+        symbol_inputs = kl.Input(name="symbol_inputs", shape=(None,), dtype='int32')
         feature_inputs = kl.Input(
-            shape=(self.feature_vector_size,), name="feature_inputs", dtype='uint8')
+            shape=(self.feature_vector_size,), name="feature_inputs", dtype='int32')
         symbol_outputs = self._build_word_network(symbol_inputs)
         letter_indexes_inputs = kl.Input(shape=(None,), dtype='int32')
         aligned_symbol_outputs = self._build_alignment(
             symbol_outputs, letter_indexes_inputs, dropout=self.dropout)
         aligned_inputs = self._build_alignment(symbol_inputs, letter_indexes_inputs)
         shifted_target_inputs = kl.Input(
-            shape=(None,), name="shifted_target_inputs", dtype='uint8')
+            shape=(None,), name="shifted_target_inputs", dtype='int32')
         inputs = [symbol_inputs, feature_inputs,
                   letter_indexes_inputs, shifted_target_inputs]
         # буквы входного слова
         tiled_feature_inputs = self._build_feature_network(
             feature_inputs, kb.shape(aligned_symbol_outputs)[1])
         # to_concatenate = [aligned_symbol_outputs, tiled_feature_inputs]
-        shifted_outputs = self._build_history_network(shifted_target_inputs)
+        shifted_outputs = self._build_history_network(shifted_target_inputs, only_last=test)
         to_decoder = [aligned_symbol_outputs, tiled_feature_inputs, shifted_outputs]
-        outputs = self._build_decoder_network(to_decoder, aligned_inputs)
+        outputs, initial_decoder_states, final_decoder_states =\
+            self._build_decoder_network(to_decoder, aligned_inputs)
         model = Model(inputs, outputs)
         model.compile(optimizer=adam(clipnorm=5.0),
                       loss="categorical_crossentropy", metrics=["accuracy"])
         encoder = kb.function([symbol_inputs], [symbol_outputs])
-        decoder_inputs = [aligned_symbol_outputs, feature_inputs, shifted_target_inputs]
-        decoder = kb.function(decoder_inputs + [kb.learning_phase()], [outputs])
+        decoder_inputs = [aligned_symbol_outputs, feature_inputs,
+                          shifted_target_inputs, aligned_inputs]
+        decoder = kb.function(decoder_inputs + initial_decoder_states + [kb.learning_phase()],
+                              [outputs] + final_decoder_states)
         return model, encoder, decoder
 
     def _prepare_for_prediction(self, words, features,
@@ -588,8 +678,11 @@ class Inflector:
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
-        shifted_targets_by_buckets = [self._make_shifted_output(L, len(indexes))
-                                      for (L, indexes) in buckets_with_indexes]
+        targets_by_buckets = [np.zeros(shape=(len(indexes), self.output_history))
+                              for L, indexes in buckets_with_indexes]
+
+        # shifted_targets_by_buckets = [self._make_shifted_output(L, len(indexes))
+        #                               for (L, indexes) in buckets_with_indexes]
         if known_answers is not None:
             encoded_answers = np.array([([BEGIN] +
                                          [self.symbol_codes_.get(x, UNKNOWN) for x in word] +
@@ -599,10 +692,9 @@ class Inflector:
                 for length, indexes in buckets_with_indexes]
         else:
             encoded_answers_by_buckets = [None] * len(buckets_with_indexes)
-        # predictions = [(words_1, probs_1), ..., (words_m, probs_m)]
         inputs = [encoder_outputs_by_buckets, features_by_buckets,
-                  shifted_targets_by_buckets]
-        return inputs, encoded_words_by_buckets, encoded_answers_by_buckets
+                  targets_by_buckets, encoded_words_by_buckets]
+        return inputs, encoded_answers_by_buckets
 
     def predict(self, data, known_answers=None, return_alignment_positions=False,
                 return_log=False, beam_width=1, verbose=0):
@@ -617,10 +709,12 @@ class Inflector:
         ----------
             answer: a list of strs
         """
+        if not getattr(self, "built_", "") == "test":
+            self.rebuild_test()
         words, features = [elem[0] for elem in data], [elem[2] for elem in data]
         output_lengths = [(2 * len(x) + self.max_length_shift_ + 3) for x in words]
-        buckets_with_indexes = collect_buckets(output_lengths, max_bucket_size=64)
-        inputs, encoded_words_by_buckets, encoded_answers_by_buckets =\
+        buckets_with_indexes = collect_buckets(output_lengths, max_bucket_length=64)
+        inputs, encoded_answers_by_buckets =\
             self._prepare_for_prediction(words, features, buckets_with_indexes, known_answers)
         answer = [[] for _ in words]
         for bucket_number, elem in enumerate(zip(*inputs)):
@@ -628,9 +722,8 @@ class Inflector:
                 print("Bucket {} of {} predicting".format(
                     bucket_number+1, len(buckets_with_indexes)))
             bucket_words, bucket_probs = self._predict_on_batch(
-                elem[0], elem[1], elem[2], beam_width=beam_width,
-                known_answers=encoded_answers_by_buckets[bucket_number],
-                source=encoded_words_by_buckets[bucket_number])
+                *elem, beam_width=beam_width,
+                known_answers=encoded_answers_by_buckets[bucket_number])
             _, bucket_indexes = buckets_with_indexes[bucket_number]
             for i, curr_words, curr_probs in zip(bucket_indexes, bucket_words, bucket_probs):
                 for curr_symbols, curr_prob in zip(curr_words, curr_probs):
@@ -647,16 +740,13 @@ class Inflector:
     def _predict_encoder_outputs(self, data):
         answer = []
         for i, bucket in enumerate(data):
-            # нельзя брать средний выход энкодера!!!!
             curr_answers = np.array([encoder([bucket])[0] for encoder in self.encoders_])
-            # answer.append(np.mean(curr_answers, axis=0))
             answer.append(curr_answers)
         return answer
 
 
-    def _predict_on_batch(self, symbols, features, target_history,
-                          steps_history=None, beam_width=1, known_answers=None,
-                          source=None):
+    def _predict_on_batch(self, symbols, features, target_history, source,
+                          steps_history=None, beam_width=1, known_answers=None):
         """
 
         symbols: np.array of float, shape=(models_number, m, L, H)
@@ -668,7 +758,6 @@ class Inflector:
         :param target_history:
         :return:
         """
-        ## ПОМЕНЯТЬ ДЛЯ self.separate_steps
         _, m, L, H = symbols.shape
         M = m * beam_width
         # positions[j] --- текущая позиция в symbols[j]
@@ -686,69 +775,56 @@ class Inflector:
             is_active[i] = True
         # сколько осталось предсказать элементов в каждой группе
         group_beam_widths = [beam_width] * m
-        symbol_inputs = np.zeros(shape=(self.models_number, M, L, H), dtype=float)
+        # symbol_inputs = np.zeros(shape=(self.models_number, M, L, H), dtype=float)
         # размножаем признаки и shifted_targets
         features = np.repeat(features, beam_width, axis=0)
         target_history = np.repeat(target_history, beam_width, axis=0)
         if steps_history is not None:
             steps_history = np.repeat(steps_history, beam_width, axis=0)
-        if source is not None:
-            source = np.repeat(source, beam_width, axis=0)
+        source = np.repeat(source, beam_width, axis=0)
+        h_states = np.zeros(shape=(M, self.models_number, self.decoder_rnn_size), dtype="float32")
+        c_states = np.zeros(shape=(M, self.models_number, self.decoder_rnn_size), dtype="float32")
         for i in range(L):
             # текущие символы
-            curr_symbols = symbols[:, np.arange(M) // beam_width, positions,:]
-            symbol_inputs[:,:,i] = curr_symbols
-            i_slice = i if self.new else np.arange(i+1)
-            args = [symbol_inputs[:,is_active,i_slice], features[is_active],
-                    target_history[is_active,i_slice]]
-            if self.separate_symbol_history:
-                args.append(steps_history[is_active,i_slice])
-            if self.new:
-                args += [h_states[is_active], c_states[is_active]]
-                curr_outputs, new_h_states, new_c_states = self._predict_current_cell_output(*args)
-            else:
-                # curr_outputs = self._predict_current_output(*args)
-                curr_outputs = self._predict_current_output(*args)[:,-1]
+            curr_symbols = symbols[:, np.arange(M) // beam_width, positions,:][:, is_active]
             active_source = source[np.arange(M), positions][is_active]
-            # curr_outputs[active_source == END, -1, STEP_CODE] = 0.0
-            # curr_outputs[active_source == PAD, -1, STEP_CODE] = 0.0
+            args = [curr_symbols[:, :, None], features[is_active],
+                    target_history[is_active], active_source[:, None]]
+            args += [h_states[is_active, :], c_states[is_active, :]]
+            curr_outputs, new_h_states, new_c_states = self._predict_current_output(*args)
+            # active_source = source[np.arange(M), positions][is_active]
             curr_outputs[active_source == END, STEP_CODE] = 0.0
             curr_outputs[active_source == PAD, STEP_CODE] = 0.0
             if i == L-1:
-                # curr_outputs[:,-1,np.arange(self.symbols_number) != END] = 0.0
                 curr_outputs[:,np.arange(self.symbols_number) != END] = 0.0
             # если текущий символ в
             if known_answers is not None:
                 curr_known_answers = known_answers[np.arange(M),positions_in_answers]
-                are_steps_allowed = np.min(
-                    [i - positions_in_answers < allowed_steps_number,
-                     source[np.arange(M), positions] != END,
-                     source[np.arange(M), positions] != PAD,
-                     np.maximum(current_steps_number < self.MAX_STEPS_NUMBER,
-                                curr_known_answers == END)], axis=0)
+                are_steps_allowed = np.min([i - positions_in_answers < allowed_steps_number,
+                                            source[np.arange(M), positions] != END,
+                                            source[np.arange(M), positions] != PAD,
+                                            np.maximum(current_steps_number < self.MAX_STEPS_NUMBER,
+                                                       curr_known_answers == END)],
+                                           axis=0)
                 self._zero_impossible_probs(
                     curr_outputs, curr_known_answers[is_active], are_steps_allowed[is_active])
             hypotheses_by_groups = [[] for _ in range(m)]
             if beam_width == 1:
-                # curr_output_symbols = np.argmax(curr_outputs[:,-1], axis=1)
                 curr_output_symbols = np.argmax(curr_outputs, axis=1)
                 # for j, curr_probs, index in zip(
                 #         np.nonzero(is_active)[0], curr_outputs[:,-1], curr_output_symbols):
                 for r, (j, curr_probs, index) in enumerate(zip(
                         np.nonzero(is_active)[0], curr_outputs, curr_output_symbols)):
                     new_score = partial_scores[j] - np.log10(curr_probs[index])
-                    hyp = (j, index, new_score, -np.log10(curr_probs[index]))
-                    if self.new:
-                        hyp += (new_h_states[r], new_c_states[r])
+                    hyp = (j, index, new_score, -np.log10(curr_probs[index]),
+                           new_h_states[r], new_c_states[r])
                     hypotheses_by_groups[j] = [hyp]
             else:
                 curr_best_scores = [np.inf] * m
-                # for j, curr_probs in zip(np.nonzero(is_active)[0], curr_outputs[:,-1]):
                 for r, (j, curr_probs) in enumerate(zip(np.nonzero(is_active)[0], curr_outputs)):
                     group_index = j // beam_width
                     prev_partial_score = partial_scores[j]
-                    # переходим к логарифмической шкале
-                    curr_probs = -np.log10(curr_probs)
+                    curr_probs = -np.log10(curr_probs)   # переходим к логарифмической шкале
                     if np.isinf(curr_best_scores[group_index]):
                         curr_best_scores[group_index] = prev_partial_score + np.min(curr_probs)
                     min_log_prob = curr_best_scores[group_index] - prev_partial_score + self.max_diff
@@ -761,9 +837,7 @@ class Inflector:
                         possible_indexes = [np.argmin(curr_probs)]
                     for index in possible_indexes:
                         new_score = prev_partial_score + curr_probs[index]
-                        hyp = (j, index, new_score, curr_probs[index])
-                        if self.new:
-                            hyp += (new_h_states[r], new_c_states[r])
+                        hyp = (j, index, new_score, curr_probs[index], new_h_states[r], new_c_states[r])
                         hypotheses_by_groups[group_index].append(hyp)
             for j, (curr_hypotheses, group_beam_width) in\
                     enumerate(zip(hypotheses_by_groups, group_beam_widths)):
@@ -778,65 +852,24 @@ class Inflector:
                 is_active[group_start:group_start+beam_width] = False
                 extend_history(words, curr_hypotheses, free_indexes, pos=1)
                 extend_history(probs, curr_hypotheses, free_indexes, pos=3)
-                extend_history(partial_scores, curr_hypotheses, free_indexes,
-                               pos=2, func=lambda x, y: y)
-                extend_history(positions, curr_hypotheses, free_indexes,
-                               pos=1, func=(lambda x, y: x+int(y == STEP_CODE)))
+                extend_history(partial_scores, curr_hypotheses, free_indexes, pos=2, func="change")
+                extend_history(positions, curr_hypotheses, free_indexes, pos=1,
+                               func=(lambda x, y: x+int(y == STEP_CODE)))
                 if known_answers is not None:
                     extend_history(positions_in_answers, curr_hypotheses, free_indexes,
                                    pos=1, func=(lambda x, y: x+int(y != STEP_CODE)))
                     extend_history(current_steps_number, curr_hypotheses, free_indexes,
                                    pos=1, func=(lambda x, y: x+int(y == STEP_CODE)))
-                if self.new:
-                    extend_history(h_states, curr_hypotheses, free_indexes, pos=4, func=(lambda x, y: y))
-                    extend_history(c_states, curr_hypotheses, free_indexes, pos=5, func=(lambda x, y: y))
-                # здесь нужно достроить гипотезы и разместить их в нужные места
-                # group_words = [words[elem[0]] + [elem[1]] for elem in curr_hypotheses]
-                # group_probs = [probs[elem[0]] + [elem[3]] for elem in curr_hypotheses]
-                # group_partial_scores = [elem[2] for elem in curr_hypotheses]
-                # group_positions = [positions[elem[0]] for elem in curr_hypotheses]
-                # if known_answers is not None:
-                #     group_positions_in_answers =\
-                #         [positions_in_answers[elem[0]] for elem in curr_hypotheses]
-                #     group_steps_number = [current_steps_number[elem[0]] for elem in curr_hypotheses]
+                extend_history(h_states, curr_hypotheses, free_indexes, pos=4, func="change")
+                extend_history(c_states, curr_hypotheses, free_indexes, pos=5, func="change")
                 if i < L-1:
-                    # group_shifted_targets, group_shifted_steps = [], []
-                    extend_history(target_history, curr_hypotheses, free_indexes,
-                                   pos=1, func="append_shifted", end=i, record_steps=False,
-                                   separate_symbol_history=self.separate_symbol_history)
-                    if self.separate_symbol_history:
-                        extend_history(steps_history, curr_hypotheses, free_indexes,
-                                       pos=1, func="append_shifted", end=i, record_steps=True)
-                    # for r, elem in enumerate(curr_hypotheses):
-                    #     curr_target_history = np.copy(target_history[elem[0]])
-                    #     if elem[1] == STEP_CODE and self.separate_symbol_history:
-                    #         curr_target_history[i+1] = curr_target_history[i]
-                    #     else:
-                    #         curr_target_history[i+1] =\
-                    #             np.concatenate((curr_target_history[i,1:], [elem[1]]))
-                    #     group_shifted_targets.append(curr_target_history)
-                    #     if self.separate_symbol_history:
-                    #         curr_step_history = np.copy(steps_history[elem[0]])
-                    #         curr_step_history[i+1][:-1] = curr_step_history[i][1:]
-                    #         curr_step_history[i+1,-1] = int(elem[1] == STEP_CODE)
-                    #         group_shifted_steps.append(curr_step_history)
+                    extend_history(target_history, curr_hypotheses, free_indexes, pos=1,
+                                   func="append_truncated", h=self.output_history)
                 for r, index in enumerate(free_indexes):
                     if r > len(curr_hypotheses):
                         break
-                    # words[index], probs[index] = group_words[r], group_probs[r]
-                    # partial_scores[index] = group_partial_scores[r]
-                    # positions[index] = group_positions[r] + int(last_symbol == STEP_CODE)
-                    # if i < L - 1:
-                    #     target_history[index] = group_shifted_targets[r]
-                    #     if self.separate_symbol_history:
-                    #         steps_history[index] = group_shifted_steps[r]
                     is_active[index] = (curr_hypotheses[r][1] != END)
                     is_completed[index] = not(is_active[index])
-                    # if known_answers is not None:
-                    #     positions_in_answers[index] =\
-                    #         group_positions_in_answers[r] + int(last_symbol != STEP_CODE)
-                    #     current_steps_number[index] =\
-                    #         group_steps_number[r] + 1 if last_symbol == STEP_CODE else 0
             if not any(is_active):
                 break
         # здесь нужно переделать words, probs в список
@@ -851,11 +884,16 @@ class Inflector:
         return words_by_groups, probs_by_groups
 
     def _predict_current_output(self, *args):
-        answer = []
+        answer = [[], [], []]
         for i, decoder in enumerate(self.decoders_):
-            answer.append(decoder([args[0][i]] + list(args[1:]) + [0])[0])
-        result = np.mean(answer, axis=0)
-        return result
+            curr_args = [args[0][i]] + list(args[1:-2]) + [args[-2][:,i], args[-1][:,i]]
+            curr_answer = decoder(curr_args + [0])
+            for elem, to_append in zip(answer, curr_answer):
+                elem.append(to_append)
+        answer[0] = np.mean(answer[0], axis=0)
+        answer[1] = np.transpose(answer[1], axes=(1, 0, 2))
+        answer[2] = np.transpose(answer[2], axes=(1, 0, 2))
+        return[elem[:,0] for elem in answer]
 
     def _predict_current_cell_output(self, *args):
         answer = [[], [], []]

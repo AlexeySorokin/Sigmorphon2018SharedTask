@@ -16,10 +16,16 @@ def to_one_hot(indices, num_classes):
     answer[np.arange(indices.shape[0]), indices] = 1
     return answer.reshape(shape+(num_classes,))
 
-def make_bucket_lengths(lengths, buckets_number):
+
+def make_bucket_lengths(lengths, buckets_number=None, max_bucket_length=None):
     m = len(lengths)
     lengths = sorted(lengths)
     last_bucket_length, bucket_lengths = 0, []
+    if buckets_number is None:
+        if max_bucket_length is not None:
+            buckets_number = (m - 1) // max_bucket_length + 1
+        else:
+            raise ValueError("Either buckets_number or max_bucket_length must be given.")
     for i in range(buckets_number):
         # могут быть проблемы с выбросами большой длины
         level = (m * (i + 1) // buckets_number) - 1
@@ -30,20 +36,20 @@ def make_bucket_lengths(lengths, buckets_number):
     return bucket_lengths
 
 
-def collect_buckets(lengths, buckets_number, max_bucket_size=-1):
-    bucket_lengths = make_bucket_lengths(lengths, buckets_number)
+def collect_buckets(lengths, buckets_number=None, max_bucket_length=-1):
+    bucket_lengths = make_bucket_lengths(lengths, buckets_number, max_bucket_length)
     indexes = [[] for length in bucket_lengths]
     for i, length in enumerate(lengths):
         index = bisect.bisect_left(bucket_lengths, length)
         indexes[index].append(i)
-    if max_bucket_size != -1:
+    if max_bucket_length != -1:
         bucket_lengths = list(chain.from_iterable(
-            ([L] * ((len(curr_indexes)-1) // max_bucket_size + 1))
+            ([L] * ((len(curr_indexes)-1) // max_bucket_length + 1))
             for L, curr_indexes in zip(bucket_lengths, indexes)
             if len(curr_indexes) > 0))
-        indexes = [curr_indexes[start:start+max_bucket_size]
+        indexes = [curr_indexes[start:start+max_bucket_length]
                    for curr_indexes in indexes
-                   for start in range(0, len(curr_indexes), max_bucket_size)]
+                   for start in range(0, len(curr_indexes), max_bucket_length)]
     return [(L, curr_indexes) for L, curr_indexes
             in zip(bucket_lengths, indexes) if len(curr_indexes) > 0]
 
