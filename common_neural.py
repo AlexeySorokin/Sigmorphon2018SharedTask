@@ -15,6 +15,21 @@ BOW, EOW, STEP = "BEGIN", "END", "STEP"
 PAD, BEGIN, END, UNKNOWN, STEP_CODE = 0, 1, 2, 3, 4
 
 
+class ClassCrossEntropy:
+
+    def __init__(self, labels, weights):
+        self.labels = labels
+        self.weights = weights
+
+    def __call__(self, y_true, y_pred):
+        loss = kb.categorical_crossentropy(y_true, y_pred)
+        for label, weight in zip(self.labels, self.weights):
+            curr_y_true = y_true[...,label]
+            curr_y_pred = y_pred[...,label]
+            loss += weight * kb.binary_crossentropy(curr_y_true, curr_y_pred)
+        return loss
+
+
 def gated_sum(X):
     first, second, sigma = X
     tiling_shape = [kb.shape(first)[i] for i in range(kb.ndim(first))]

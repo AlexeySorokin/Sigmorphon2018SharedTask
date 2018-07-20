@@ -155,10 +155,9 @@ class Inflector:
                  rnn="lstm", encoder_rnn_layers=1, encoder_rnn_size=32,
                  decoder_rnn_size=32, dense_output_size=32,
                  use_decoder_gate=False,
-                 # regularizer="l2"
                  conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
                  history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
-                 callbacks=None,
+                 callbacks=None, step_loss_weight=0.0,
                  use_lm=False, min_prob=0.01, max_diff=2.0,
                  random_state=187, verbose=1):
         self.use_full_tags = use_full_tags
@@ -198,6 +197,7 @@ class Inflector:
         self.history_dropout = history_dropout
         self.decoder_dropout = decoder_dropout
         self.regularizer = regularizer
+        self.step_loss_weight = step_loss_weight
         # # декодинг
         self.use_lm = use_lm
         self.min_prob = min_prob
@@ -655,8 +655,11 @@ class Inflector:
         outputs, initial_decoder_states, final_decoder_states =\
             self._build_decoder_network(to_decoder, aligned_inputs)
         model = Model(inputs, outputs)
-        model.compile(optimizer=adam(clipnorm=5.0),
-                      loss="categorical_crossentropy", metrics=["accuracy"])
+        if self.step_loss_weight:
+            loss = ClassCrossEntropy([STEP_CODE], [self.step_loss_weight])
+        else:
+            loss = "categorical_crossentropy"
+        model.compile(optimizer=adam(clipnorm=5.0), loss=loss, metrics=["accuracy"])
         encoder = kb.function([symbol_inputs], [symbol_outputs])
         decoder_inputs = [aligned_symbol_outputs, feature_inputs,
                           shifted_target_inputs, aligned_inputs]
