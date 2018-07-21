@@ -231,7 +231,7 @@ class Aligner:
                     self._tmp_encoding[a] = code
                 code += self.output_symbols_number
             answer.append(code)
-        return np.array(answer, dtype=int)
+        return np.array(answer, dtype=np.intc)
 
     def decode(self, code):
         if code < len(self.symbols_):

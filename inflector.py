@@ -72,6 +72,67 @@ def make_alignment_indexes(alignment, reverse=False):
     return source_indexes, target
 
 
+def make_auxiliary_target(alignment, mode):
+    if mode == "morphemes":
+        PREFIX, SUFFIX, INFIX, STEM = 0, 1, 2, 3
+    else:
+        alignment = [('^', '^')] + list(alignment) + [('$', '$')]
+    if mode == "identity":
+        answer = [alignment[1] != ""]
+        for i, (x, y) in enumerate(alignment[1:-1], 1):
+            if x != "":
+                answer.append((x == y) and alignment[i+1][0] != "")
+        answer.append(alignment[-2] != "")
+    elif mode == "removal":
+        answer = [False]
+        for i, (x, y) in enumerate(alignment[1:-1], 1):
+            if x != "":
+                answer.append(y == "")
+        answer.append(False)
+    elif mode == "substitution":
+        answer = [False]
+        for i, (x, y) in enumerate(alignment[1:-1], 1):
+            if x != "":
+                answer.append(y != x and y != "")
+        answer.append(False)
+    elif mode == "morphemes":
+        for i, (x, y) in enumerate(alignment):
+            if x == y:
+                prefix_end = i
+                break
+        else:
+            prefix_end = len(alignment)
+        for i, (x, y) in enumerate(alignment[:-1]):
+            if x == y:
+                suffix_start = len(alignment) - i
+                break
+        else:
+            suffix_start = len(alignment)
+        answer_indexes = [STEM if prefix_end == 0 else PREFIX]
+        for i, (x, y) in enumerate(alignment[:prefix_end]):
+            if x != "":
+                answer_indexes.append(PREFIX)
+        for i, (x, y) in enumerate(alignment[prefix_end:suffix_start]):
+            if x != "":
+                is_stem = (x == y) and (i == len(alignment)-1 or alignment[i+1][0] != "")
+                answer_indexes.append(STEM if is_stem else INFIX)
+        for i, (x, y) in enumerate(alignment[suffix_start:]):
+            if x != "":
+                answer_indexes.append(SUFFIX)
+        answer_indexes.append(SUFFIX if suffix_start < len(alignment) else STEM)
+        # answer = np.zeros(shape=(len(answer_indexes), 4), dtype=int)
+        # answer[np.arange(len(answer)), answer_indexes] = 1
+        answer = answer_indexes
+    else:
+        raise ValueError("Unknown function mode:", mode)
+    return answer
+
+def make_auxiliary_targets(alignment, modes, reverse=False):
+    answer = [make_auxiliary_target(alignment, mode) for mode in modes]
+    if reverse:
+        answer = [elem[::-1] for elem in answer]
+    return answer
+
 def extend_history(histories, hyps, indexes, start=0, pos=None,
                    history_pos=0, value=None, func="append", **kwargs):
     """
@@ -157,7 +218,9 @@ class Inflector:
                  use_decoder_gate=False,
                  conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
                  history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
-                 callbacks=None, step_loss_weight=0.0,
+                 callbacks=None, step_loss_weight=0.0, auxiliary_targets=None,
+                 auxiliary_target_weights=None, auxiliary_dense_units=None,
+                 encode_auxiliary_symbol_outputs=False,
                  use_lm=False, min_prob=0.01, max_diff=2.0,
                  random_state=187, verbose=1):
         self.use_full_tags = use_full_tags
@@ -198,6 +261,10 @@ class Inflector:
         self.decoder_dropout = decoder_dropout
         self.regularizer = regularizer
         self.step_loss_weight = step_loss_weight
+        self.auxiliary_targets = auxiliary_targets or []
+        self.auxiliary_target_weights = auxiliary_target_weights
+        self.auxiliary_dense_units = auxiliary_dense_units
+        self.encode_auxiliary_symbol_outputs = encode_auxiliary_symbol_outputs
         # # декодинг
         self.use_lm = use_lm
         self.min_prob = min_prob
@@ -219,6 +286,16 @@ class Inflector:
             self.rnn = getattr(kl, self.rnn.upper())
         if self.rnn not in [kl.GRU, kl.LSTM]:
             self.rnn = None
+        if self.auxiliary_targets_number:
+            for attr in ["auxiliary_target_weights", "auxiliary_dense_units"]:
+                value = getattr(self, attr)
+                if isinstance(value, (int, float)):
+                    setattr(self, attr, [value] * self.auxiliary_targets_number)
+                elif len(value) != self.auxiliary_targets_number:
+                    raise ValueError("Wrong number of elements in {}, "
+                                     "there are {} auxiliary targets".format(
+                                        value, self.auxiliary_targets_number))
+        self.encode_auxiliary_symbol_outputs &= (self.auxiliary_targets_number > 0)
         callbacks = callbacks or dict()
         self.callbacks = [getattr(kcall, key)(**params) for key, params in callbacks.items()]
 
@@ -290,6 +367,14 @@ class Inflector:
     @property
     def feature_vector_size(self):
         return (self.labels_number_ + len(self.tags_)) if self.use_full_tags else self.labels_number_
+
+    @property
+    def inputs_number(self):
+        return 4
+
+    @property
+    def auxiliary_targets_number(self):
+        return len(self.auxiliary_targets)
 
     def _make_vocabulary(self, X):
         symbols = {a for first, second, _ in X for a in first+second}
@@ -391,7 +476,8 @@ class Inflector:
                                        np.hstack([answer[:,i-1,1:], targets[:,i-1,None]]))
         return answer
 
-    def transform_training_data(self, lemmas, features, letter_positions, targets):
+    def transform_training_data(self, lemmas, features, letter_positions,
+                                targets, auxiliary_targets=None):
         """
 
         lemmas: list of strs,
@@ -419,6 +505,15 @@ class Inflector:
             for length, indexes in buckets_with_indexes]
         targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
                               for length, indexes in buckets_with_indexes]
+        if auxiliary_targets is not None:
+            fill_values = [elem == "identity" for elem in self.auxiliary_targets]
+            auxiliary_targets_by_buckets = []
+            for i, elem in enumerate(auxiliary_targets):
+                auxiliary_targets_by_buckets.append(
+                    [make_table(elem, length, indexes, fill_value=fill_values[i])
+                     for length, indexes in buckets_with_indexes])
+        else:
+            auxiliary_targets_by_buckets = []
         def _make_bucket_data(func):
             return [func(L, len(indexes), table) for table, (L, indexes)
                     in zip(targets_by_buckets, buckets_with_indexes)]
@@ -427,6 +522,8 @@ class Inflector:
                           letter_positions_by_buckets, history_by_buckets))
         for i in range(len(answer)):
             answer[i] += (targets_by_buckets[i],)
+            for elem in auxiliary_targets_by_buckets:
+                answer[i] += (elem[i],)
         return answer, [elem[1] for elem in buckets_with_indexes]
 
     def _preprocess(self, data, alignments, to_fit=True, alignments_outfile=None):
@@ -440,13 +537,21 @@ class Inflector:
             self.aligner.align(to_align, to_fit=True, only_initial=True)
         indexes_with_targets = [make_alignment_indexes(alignment, reverse=self.reverse)
                                 for alignment in alignments]
+        if len(self.auxiliary_targets) > 0:
+            auxiliary_letter_targets = [
+                make_auxiliary_targets(alignment, self.auxiliary_targets, reverse=self.reverse)
+                for alignment in alignments]
+            auxiliary_letter_targets = list(map(list, zip(*auxiliary_letter_targets)))
+        else:
+            auxiliary_letter_targets = None
         lemmas = [elem[0] for elem in data]
         features = [elem[2] for elem in data]
         letter_indexes = [elem[0] for elem in indexes_with_targets]
         targets = [elem[1] for elem in indexes_with_targets]
         if self.reverse:
             lemmas = [x[::-1] for x in lemmas]
-        return self.transform_training_data(lemmas, features, letter_indexes, targets)
+        return self.transform_training_data(lemmas, features, letter_indexes,
+                                            targets, auxiliary_letter_targets)
 
     def train(self, data, alignments=None, dev_data=None, dev_alignments=None,
               alignments_outfile=None, save_file=None, model_file=None):
@@ -471,7 +576,6 @@ class Inflector:
 
         data_by_buckets, buckets_indexes = self._preprocess(
             data, alignments, to_fit=True, alignments_outfile=alignments_outfile)
-        sys.exit()
         if dev_data is not None:
             dev_data_by_buckets, dev_bucket_indexes =\
                 self._preprocess(dev_data, dev_alignments, to_fit=False)
@@ -519,12 +623,21 @@ class Inflector:
                 curr_callbacks = self.callbacks + [save_callback]
             else:
                 curr_callbacks = self.callbacks
+            curr_callbacks.append(BasicMetricsProgbarLogger(verbose=1))
+            if "morphemes" in self.auxiliary_targets:
+                auxiliary_symbols_number = [(self.auxiliary_targets.index("morphemes")+1, 4)]
+            else:
+                auxiliary_symbols_number = None
             train_gen = generate_data(X, train_indexes_by_buckets, train_batches_indexes,
-                                      self.batch_size, self.symbols_number)
+                                      self.batch_size, self.symbols_number,
+                                      inputs_number=self.inputs_number,
+                                      auxiliary_symbols_number=auxiliary_symbols_number)
             val_gen = generate_data(X_dev, dev_indexes_by_buckets, dev_batches_indexes,
-                                    self.batch_size, self.symbols_number, shuffle=False)
-            model.fit_generator(train_gen, len(train_batches_indexes),
-                                epochs=self.nepochs, callbacks=curr_callbacks,
+                                    self.batch_size, self.symbols_number, shuffle=False,
+                                    inputs_number=self.inputs_number,
+                                    auxiliary_symbols_number=auxiliary_symbols_number)
+            model.fit_generator(train_gen, len(train_batches_indexes), epochs=self.nepochs,
+                                callbacks=curr_callbacks, verbose=0,
                                 validation_data=val_gen, validation_steps=len(dev_batches_indexes))
             if model_file is not None:
                 self.models_[i].load_weights(curr_model_file)
@@ -551,7 +664,7 @@ class Inflector:
         self.built_ = "test"
         return self
 
-    def _build_word_network(self, inputs):
+    def _build_word_network(self, inputs, feature_inputs):
         if self.use_embeddings:
             embedding = kl.Embedding(self.symbols_number, self.embeddings_size)
         else:
@@ -566,7 +679,20 @@ class Inflector:
                 outputs = kl.Bidirectional(kl.LSTM(self.encoder_rnn_size,
                                                    dropout=self.encoder_rnn_dropout,
                                                    return_sequences=True))(outputs)
-        return outputs
+        if self.auxiliary_targets_number > 0:
+            auxiliary_probs, auxiliary_logits = [], []
+            for i, target_name in enumerate(self.auxiliary_targets):
+                args = [outputs, feature_inputs, self.auxiliary_dense_units[i]]
+                if target_name == "morphemes":
+                    args.append(4)
+                probs, logits = self._build_auxiliary_objective_network(*args, name=target_name)
+                auxiliary_probs.append(probs)
+                auxiliary_logits.append(logits)
+            if self.encode_auxiliary_symbol_outputs:
+                outputs = kl.Concatenate()([outputs] + auxiliary_logits)
+        else:
+            auxiliary_probs = None
+        return outputs, auxiliary_probs
 
     @property
     def symbol_outputs_dim(self):
@@ -621,8 +747,9 @@ class Inflector:
         pre_outputs = kl.TimeDistributed(kl.Dense(
             self.dense_output_size, activation="relu", use_bias=False,
             input_shape=(self.decoder_rnn_size,)))(decoder_outputs)
+        output_name = "outputs" if not self.use_decoder_gate else "basic_outputs"
         outputs = kl.TimeDistributed(kl.Dense(
-            self.symbols_number, activation="softmax", name="outputs",
+            self.symbols_number, activation="softmax", name=output_name,
             activity_regularizer=kreg.l2(self.regularizer),
             input_shape=(self.dense_output_size,)))(pre_outputs)
         if self.use_decoder_gate:
@@ -630,15 +757,34 @@ class Inflector:
             gate_outputs = kl.Dense(1, activation="sigmoid")(gate_inputs)
             source_inputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
                                       output_shape=(lambda x: x + (self.symbols_number,)))(source)
-            outputs = kl.Lambda(gated_sum, output_shape=(lambda x:x[0]))([source_inputs, outputs, gate_outputs])
+            output_layer = kl.Lambda(gated_sum, arguments={"disable_first": False},
+                                     output_shape=(lambda x:x[0]), name="outputs")
+            outputs = output_layer([source_inputs, outputs, gate_outputs])
         return outputs, initial_states, [final_h_states, final_c_states]
+
+    def _build_auxiliary_objective_network(self, inputs, feature_inputs, units_number,
+                                           output_units=1, name=None):
+        activation = "sigmoid" if output_units == 1 else "softmax"
+        feature_inputs = kl.Lambda(kb.cast, arguments={"dtype": "float32"})(feature_inputs)
+        feature_inputs = kl.Dense(self.feature_embeddings_size,
+                                  activation="relu", use_bias=False)(feature_inputs)
+        def tiling_func(x):
+            return kb.tile(x[:,None], [1, kb.shape(inputs)[1], 1])
+        feature_inputs = kl.Lambda(tiling_func, output_shape=(lambda x: (None,) + x))(feature_inputs)
+        pre_answer = kl.Concatenate()([inputs, feature_inputs])
+        pre_answer = kl.Dense(units_number, activation="relu")(pre_answer)
+        pre_answer = kl.Dense(output_units)(pre_answer)
+        answer = kl.Activation(activation, name=name)(pre_answer)
+        return answer, pre_answer
+
 
     def _build_model(self, test=False):
         # входные данные
         symbol_inputs = kl.Input(name="symbol_inputs", shape=(None,), dtype='int32')
         feature_inputs = kl.Input(
             shape=(self.feature_vector_size,), name="feature_inputs", dtype='int32')
-        symbol_outputs = self._build_word_network(symbol_inputs)
+        symbol_outputs, auxiliary_symbol_outputs =\
+            self._build_word_network(symbol_inputs, feature_inputs)
         letter_indexes_inputs = kl.Input(shape=(None,), dtype='int32')
         aligned_symbol_outputs = self._build_alignment(
             symbol_outputs, letter_indexes_inputs, dropout=self.dropout)
@@ -653,19 +799,31 @@ class Inflector:
         # to_concatenate = [aligned_symbol_outputs, tiled_feature_inputs]
         shifted_outputs = self._build_history_network(shifted_target_inputs, only_last=test)
         to_decoder = [aligned_symbol_outputs, tiled_feature_inputs, shifted_outputs]
-        outputs, initial_decoder_states, final_decoder_states =\
+        first_output, initial_decoder_states, final_decoder_states =\
             self._build_decoder_network(to_decoder, aligned_inputs)
-        model = Model(inputs, outputs)
         if self.step_loss_weight:
             loss = ClassCrossEntropy([STEP_CODE], [self.step_loss_weight])
         else:
             loss = "categorical_crossentropy"
-        model.compile(optimizer=adam(clipnorm=5.0), loss=loss, metrics=["accuracy"])
-        encoder = kb.function([symbol_inputs], [symbol_outputs])
+        if self.auxiliary_targets_number > 0:
+            loss, outputs, metrics = [loss], [first_output], ["outputs_accuracy"]
+            for i, target_name in enumerate(self.auxiliary_targets):
+                outputs.append(auxiliary_symbol_outputs[i])
+                loss.append("binary_crossentropy" if target_name != "morphemes"
+                            else "categorical_crossentropy")
+            weights = [1.0] + self.auxiliary_target_weights
+        else:
+            outputs, metrics, weights = first_output, ["accuracy"], None
+        model = Model(inputs, outputs)
+        model.compile(optimizer=adam(clipnorm=5.0), loss=loss,
+                      metrics=["accuracy"], loss_weights=weights)
+        to_encoder = ([symbol_inputs, feature_inputs] if self.encode_auxiliary_symbol_outputs
+                      else [symbol_inputs])
+        encoder = kb.function(to_encoder + [kb.learning_phase()], [symbol_outputs])
         decoder_inputs = [aligned_symbol_outputs, feature_inputs,
                           shifted_target_inputs, aligned_inputs]
         decoder = kb.function(decoder_inputs + initial_decoder_states + [kb.learning_phase()],
-                              [outputs] + final_decoder_states)
+                              [first_output] + final_decoder_states)
         return model, encoder, decoder
 
     def _prepare_for_prediction(self, words, features,
@@ -677,11 +835,12 @@ class Inflector:
                                     for length, indexes in buckets_with_indexes]
         # представления входных слов после lstm
         # encoder_outputs_by_buckets[i].shape = (self.models, lengths[i])
-        encoder_outputs_by_buckets =\
-            self._predict_encoder_outputs(encoded_words_by_buckets)
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
+        encoder_outputs_by_buckets = \
+            self._predict_encoder_outputs(encoded_words_by_buckets, features_by_buckets)
+
         targets_by_buckets = [np.zeros(shape=(len(indexes), self.output_history))
                               for L, indexes in buckets_with_indexes]
 
@@ -741,10 +900,14 @@ class Inflector:
                     answer[i][j][2] = score
         return answer
 
-    def _predict_encoder_outputs(self, data):
+    def _predict_encoder_outputs(self, data, features):
         answer = []
         for i, bucket in enumerate(data):
-            curr_answers = np.array([encoder([bucket])[0] for encoder in self.encoders_])
+            if self.encode_auxiliary_symbol_outputs:
+                to_encoder = [bucket, features[i], 0]
+            else:
+                to_encoder = [bucket, 0]
+            curr_answers = np.array([encoder(to_encoder)[0] for encoder in self.encoders_])
             answer.append(curr_answers)
         return answer
 

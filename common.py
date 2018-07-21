@@ -77,7 +77,11 @@ def make_table(data, length, indexes, fill_value=None, fill_with_last=False):
 
 
 def generate_data(X, indexes_by_buckets, batches_indexes, batch_size,
-                   symbols_number, shuffle=True, weights=None, nepochs=None):
+                  symbols_number, auxiliary_symbols_number=None,
+                  inputs_number=None, shuffle=True,
+                  weights=None, nepochs=None):
+    inputs_number = inputs_number or (len(X[0]) - 1)
+    auxiliary_symbols_number = auxiliary_symbols_number or []
     nsteps = 0
     while nepochs is None or nsteps < nepochs:
         if shuffle:
@@ -88,11 +92,16 @@ def generate_data(X, indexes_by_buckets, batches_indexes, batch_size,
             curr_bucket, bucket_size = X[i], len(X[i][0])
             end = min(bucket_size, start + batch_size)
             curr_indexes = indexes_by_buckets[i][start:end]
-            to_yield = [elem[curr_indexes] for elem in curr_bucket[:-1]]
-            y_to_yield = curr_bucket[-1][curr_indexes]
+            to_yield = [elem[curr_indexes] for elem in curr_bucket[:inputs_number]]
+            y_to_yield = [elem[curr_indexes] for elem in curr_bucket[inputs_number:]]
             # веса объектов
             # преобразуем y_to_yield в бинарный формат
-            y_to_yield = to_one_hot(y_to_yield, symbols_number)
+            y_to_yield[0] = to_one_hot(y_to_yield[0], symbols_number)
+            for i, value in auxiliary_symbols_number:
+                y_to_yield[i] = to_one_hot(y_to_yield[i], value)
+            for i, elem in enumerate(y_to_yield[1:], 1):
+                if elem.ndim == 2:
+                    y_to_yield[i] = y_to_yield[i][:,:,None]
             # yield (to_yield, y_to_yield, weights_to_yield)
             if weights is None:
                 yield (to_yield, y_to_yield)

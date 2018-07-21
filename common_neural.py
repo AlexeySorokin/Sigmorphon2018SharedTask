@@ -8,11 +8,28 @@ import keras.layers as kl
 from keras.engine import Layer, Model
 from keras.engine.topology import InputSpec
 from keras.initializers import Constant
-from keras.callbacks import Callback
+from keras.callbacks import Callback, ProgbarLogger
 
 
 BOW, EOW, STEP = "BEGIN", "END", "STEP"
 PAD, BEGIN, END, UNKNOWN, STEP_CODE = 0, 1, 2, 3, 4
+
+
+class BasicMetricsProgbarLogger(ProgbarLogger):
+
+    BASIC_METRICS = ["loss", "outputs_loss", "acc", "outputs_acc", "val_morphemes_acc"]
+
+    def __init__(self, verbose, count_mode='steps'):
+        # Ignore the `verbose` argument specified in `fit()` and pass `count_mode` upstream
+        self.verbose = verbose
+        super(BasicMetricsProgbarLogger, self).__init__(count_mode)
+
+    def on_train_begin(self, logs=None):
+        # filter out the training metrics
+        self.params['metrics'] = [m for m in self.params['metrics']
+                                  if (m in self.BASIC_METRICS or
+                                      (m[:4] == "val_" and m[4:] in self.BASIC_METRICS))]
+        self.epochs = self.params['epochs']
 
 
 class ClassCrossEntropy:
@@ -30,13 +47,15 @@ class ClassCrossEntropy:
         return loss
 
 
-def gated_sum(X):
+def gated_sum(X, disable_first=False):
     first, second, sigma = X
     tiling_shape = [kb.shape(first)[i] for i in range(kb.ndim(first))]
     for i in range(kb.ndim(sigma)-1):
         tiling_shape[i] = 1
     while kb.ndim(sigma) < kb.ndim(first):
         sigma = kb.expand_dims(sigma, -1)
+    if disable_first:
+        second *= (1.0 - first)
     answer = first * sigma + second * (1.0 - sigma)
     return answer
 

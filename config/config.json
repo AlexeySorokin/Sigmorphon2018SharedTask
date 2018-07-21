@@ -1,9 +1,28 @@
 {
-  "model": {"nepochs": 100, "batch_size": 16,
-            "conv_layers": 0, "encoder_rnn_layers": 1, "encoder_rnn_size": 64, "decoder_rnn_size": 64,
-            "use_decoder_gate": true, "output_history": 4, "decoder_dropout": 0.2,
-            "use_feature_embeddings": true, "feature_embeddings_size": 32, "use_full_tags": false,
-            "use_output_embeddings": false, "output_embeddings_size": 32,
-            "callbacks": {"EarlyStopping": {"patience": 10, "monitor": "val_acc"}},
-            "aligner_params": {"n_iter": 1, "init": "lcs", "separate_endings": true, "words_to_debug": ["беднато́й",  "во́жыкам"]}}
+  "model": {
+    "nepochs": 100,
+    "batch_size": 16,
+    "conv_layers": 0,
+    "encoder_rnn_layers": 1,
+    "encoder_rnn_size": 64,
+    "decoder_rnn_size": 64,
+    "dense_output_size": 32,
+    "decoder_dropout": 0.2,
+    "encoder_rnn_dropout": 0.2,
+    "use_decoder_gate": true,
+    "output_history": 4,
+    "use_feature_embeddings": true,
+    "feature_embeddings_size": 32,
+    "use_embeddings": false,
+    "embeddings_size": 32,
+    "use_full_tags": false,
+    "use_output_embeddings": false,
+    "output_embeddings_size": 32,
+    "callbacks": {
+      "EarlyStopping": {
+        "patience": 10,
+        "monitor": "val_acc"
+      }
+    }
+  }
 }

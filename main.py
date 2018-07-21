@@ -3,6 +3,9 @@ import getopt
 import os
 import ujson as json
 
+import tensorflow as tf
+import keras.backend.tensorflow_backend as kbt
+
 from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector
 from mcmc_aligner import Aligner
@@ -22,6 +25,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 SHORT_OPTS = "l:o:S:L:m:tT"
 
 if __name__ == "__main__":
+    config = tf.ConfigProto()
+    config.gpu_options.per_process_gpu_memory_fraction = 0.5
+    kbt.set_session(tf.Session(config=config))
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
     languages = None
     corr_dir = os.path.join("conll2018", "task1", "all")
