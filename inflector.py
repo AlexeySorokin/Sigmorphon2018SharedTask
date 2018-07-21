@@ -160,6 +160,9 @@ def extend_history(histories, hyps, indexes, start=0, pos=None,
         func = lambda x, y: y
     elif func == "append_truncated":
         func = lambda x, y: np.concatenate([x[1:], [y]])
+    elif func == "set":
+        i = kwargs["position"]
+        func = lambda x, y: np.concatenate([x[:i], [y], x[i+1:]])
     elif not callable(func):
         raise ValueError("func must be 'append', 'sum' or a callable object")
     group_histories = [func(histories[elem[history_pos]], value)
@@ -841,11 +844,12 @@ class Inflector:
         encoder_outputs_by_buckets = \
             self._predict_encoder_outputs(encoded_words_by_buckets, features_by_buckets)
 
-        targets_by_buckets = [np.zeros(shape=(len(indexes), self.output_history))
-                              for L, indexes in buckets_with_indexes]
-
-        # shifted_targets_by_buckets = [self._make_shifted_output(L, len(indexes))
-        #                               for (L, indexes) in buckets_with_indexes]
+        # targets_by_buckets = [np.zeros(shape=(len(indexes), self.output_history))
+        #                       for L, indexes in buckets_with_indexes]
+        # for elem in targets_by_buckets:
+        #     elem[:] = BEGIN
+        targets_by_buckets = [self._make_shifted_output(L, len(indexes))
+                              for (L, indexes) in buckets_with_indexes]
         if known_answers is not None:
             encoded_answers = np.array([([BEGIN] +
                                          [self.symbol_codes_.get(x, UNKNOWN) for x in word] +
@@ -956,7 +960,8 @@ class Inflector:
             curr_symbols = symbols[:, np.arange(M) // beam_width, positions,:][:, is_active]
             active_source = source[np.arange(M), positions][is_active]
             args = [curr_symbols[:, :, None], features[is_active],
-                    target_history[is_active], active_source[:, None]]
+                    target_history[is_active,max(i-self.output_history,0):i+1],
+                    active_source[:, None]]
             args += [h_states[is_active, :], c_states[is_active, :]]
             curr_outputs, new_h_states, new_c_states = self._predict_current_output(*args)
             # active_source = source[np.arange(M), positions][is_active]
@@ -1026,12 +1031,12 @@ class Inflector:
                     extend_history(positions_in_answers, curr_hypotheses, free_indexes,
                                    pos=1, func=(lambda x, y: x+int(y != STEP_CODE)))
                     extend_history(current_steps_number, curr_hypotheses, free_indexes,
-                                   pos=1, func=(lambda x, y: x+int(y == STEP_CODE)))
+                                   pos=1, func=(lambda x, y: (0 if y != STEP_CODE else x+1)))
                 extend_history(h_states, curr_hypotheses, free_indexes, pos=4, func="change")
                 extend_history(c_states, curr_hypotheses, free_indexes, pos=5, func="change")
                 if i < L-1:
                     extend_history(target_history, curr_hypotheses, free_indexes, pos=1,
-                                   func="append_truncated", h=self.output_history)
+                                   func="set", h=self.output_history, position=i+1)
                 for r, index in enumerate(free_indexes):
                     if r > len(curr_hypotheses):
                         break
@@ -1125,19 +1130,31 @@ class Inflector:
             answer[1] = [10.0**(-x) for x in probs_to_return]
         return answer
 
-    def test_prediction(self, data, alignments=None):
-        # as for now, we cannot load aligner, therefore have to train it
-        data_by_buckets, buckets_indexes = self._preprocess(data, alignments, to_fit=False)
-        predictions, answer = [None] * len(data), [None] * len(data)
-        for curr_indexes, elem in zip(buckets_indexes, data_by_buckets):
-            curr_predictions = self.models_[0].predict(list(elem[:-1]))
-            for index, outputs, corr_outputs in zip(curr_indexes, curr_predictions, elem[-1]):
-                predictions[index] = outputs
-                curr_answer = []
-                for j, probs in enumerate(outputs):
-                    letter_code = corr_outputs[j]
-                    if letter_code == END:
-                        break
-                    curr_answer.append((self.symbols_[letter_code], probs[letter_code]))
-                answer[index] = curr_answer
-        return predictions, answer
+    # def test_prediction(self, data, alignments=None):
+    #     # as for now, we cannot load aligner, therefore have to train it
+    #     data_by_buckets, buckets_indexes = self._preprocess(data, alignments, to_fit=False)
+    #     predictions, answer = [None] * len(data), [None] * len(data)
+    #     for curr_indexes, elem in zip(buckets_indexes, data_by_buckets):
+    #         curr_predictions = self.models_[0].predict(list(elem[:-1]))
+    #         for index, outputs, corr_outputs in zip(curr_indexes, curr_predictions, elem[-1]):
+    #             predictions[index] = outputs
+    #             curr_answer = []
+    #             for j, probs in enumerate(outputs):
+    #                 letter_code = corr_outputs[j]
+    #                 if letter_code == END:
+    #                     break
+    #                 curr_answer.append((self.symbols_[letter_code], probs[letter_code]))
+    #             answer[index] = curr_answer
+    #     return predictions, answer
+
+def predict_missed_answers(test_data, answers, inflector, beam_width=1):
+    indexes = [i for i, x in enumerate(test_data)
+               if x[1] not in [elem[0] for elem in answers[i]]]
+    data_with_missed_answers = [test_data[i] for i in indexes]
+    known_answers = [elem[1] for elem in data_with_missed_answers]
+    scores = inflector.predict(data_with_missed_answers,
+                               known_answers, beam_width=beam_width)
+    answer = [(index, elem[0]) for index, elem in zip(indexes, scores)]
+    return answer
+
+

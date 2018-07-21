@@ -47,6 +47,7 @@ def make_history(X, h, pad, flatten=False, only_last=False,
     else:
         answer = batch_shifted_fill(X, h, pad, flatten=flatten)
     if only_last:
+        # answer = answer[:,-1:]
         answer = answer[:,-1:]
     if calculate_keras_shape:
         if not hasattr(answer, "_keras_shape") and hasattr(X, "_keras_shape"):

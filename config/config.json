@@ -24,5 +24,6 @@
         "monitor": "val_acc"
       }
     }
-  }
+  },
+  "predict": {"beam_width": 5}
 }

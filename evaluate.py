@@ -11,23 +11,27 @@ WIDTHS = [16, 6]
 
 def evaluate_files(infile, corr_file):
     test_data, corr_data = read_infile(infile), read_infile(corr_file)
-    corr, total, total_dist = 0, len(corr_data), 0.0
+    corr, cov, total, total_dist, best_dist = 0, 0, len(test_data), 0.0, 0.0
     for test_elem, corr_elem in zip(test_data, corr_data):
         test_words = test_elem[1].split()
         corr_word = corr_elem[1]
-        if any(x == corr_word for x in test_words):
+        if corr_word == test_words[0]:
             corr += 1
+        else:
+            best_distance = distance(corr_word, test_words[0])
+            total_dist += best_distance
+        if any(x == corr_word for x in test_words):
+            cov += 1
             continue
-        best_distance = 100
-        for word in test_words:
+        for word in test_words[:1]:
             d = distance(corr_word, word)
             if d == 1:
-                total_dist += d
+                best_dist += d
                 break
             best_distance = min(best_distance, d)
         else:
-            total_dist += best_distance
-    answer = [100 * corr / total, total_dist / total]
+            best_dist += best_distance
+    answer = [100 * corr / total, 100 * cov / total, total_dist / total, best_dist / total]
     return answer
 
 

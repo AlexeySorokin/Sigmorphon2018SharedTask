@@ -7,7 +7,8 @@ import tensorflow as tf
 import keras.backend.tensorflow_backend as kbt
 
 from read import read_languages_infile, read_infile
-from inflector import Inflector, load_inflector
+from inflector import Inflector, load_inflector, predict_missed_answers
+from write import output_analysis
 from mcmc_aligner import Aligner
 
 DEFAULT_PARAMS = {"beam_width": 1}
@@ -26,18 +27,21 @@ SHORT_OPTS = "l:o:S:L:m:tT"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
-    config.gpu_options.per_process_gpu_memory_fraction = 0.5
+    config.gpu_options.per_process_gpu_memory_fraction = 0.4
     kbt.set_session(tf.Session(config=config))
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
     languages = None
     corr_dir = os.path.join("conll2018", "task1", "all")
-    out_dir, save_dir, load_dir, model_name = "results", None, None, None
+    save_dir, load_dir, model_name = None, None, None
+    analysis_dir, pred_dir = "results", "predictions"
     to_train, to_test = True, True
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
+        elif opt == "-a":
+            analysis_dir = val
         elif opt == "-o":
-            out_dir = val
+            pred_dir = val
         elif opt == "-c":
             corr_dir = val
         elif opt == "-S":
@@ -62,7 +66,8 @@ if __name__ == "__main__":
         data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
         data *= params.get("data_multiple", 1)
         if mode != "high":
-            dev_data = test_data
+            dev_data = test_data[:]
+        # test_data = test_data[:20]
         # data_for_alignment = [elem[:2] for elem in data]
         # aligner = Aligner(n_iter=1, separate_endings=True, init="lcs",
         #                   init_params={"gap": 2, "initial_gap": 3})
@@ -78,12 +83,22 @@ if __name__ == "__main__":
             inflector.train(data, dev_data=dev_data, save_file=save_file,
                             alignments_outfile="alignments-{}.out".format(filename))
         if to_test:
-            answer = inflector.predict(data[:10], **params["predict"])
-            outfile = os.path.join(out_dir, filename) if out_dir is not None else None
-            if outfile is not None:
-                with open(outfile, "w", encoding="utf8") as fout:
-                    for source, predictions in zip(data, answer):
-                        word, descr = source[0], source[2]
-                        for prediction in predictions:
-                            fout.write("{}\t{}\t{}\t{:.2f}\n".format(
-                                word, ";".join(descr), prediction[0], 100 * prediction[2]))
+            answer = inflector.predict(test_data, **params["predict"])
+            # outfile = os.path.join(analysis_dir, filename) if analysis_dir is not None else None
+            # if outfile is not None:
+            #     with open(outfile, "w", encoding="utf8") as fout:
+            #         for source, predictions in zip(test_data, answer):
+            #             word, descr = source[0], source[2]
+            #             for prediction in predictions:
+            #                 fout.write("{}\t{}\t{}\t{:.2f}\n".format(
+            #                     word, ";".join(descr), prediction[0], 100 * prediction[2]))
+            # pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
+            # if pred_file is not None:
+            #     with open(pred_file, "w", encoding="utf8") as fout:
+            #         for source, predictions in zip(test_data, answer):
+            #             predicted_words = [elem[0] for elem in predictions]
+            #             fout.write("\t".join([source[0], " ".join(predicted_words), ";".join(source[2])]) + "\n")
+            answers_for_missed = predict_missed_answers(test_data, answer, inflector, **params["predict"])
+            analysis_file = os.path.join(analysis_dir, filename+"-analysis") if analysis_dir is not None else None
+            output_analysis(test_data, answer, analysis_file,
+                            answers_for_missed=answers_for_missed)
