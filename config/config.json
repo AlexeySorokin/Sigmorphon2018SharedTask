@@ -14,8 +14,6 @@
     "use_decoder_gate": true,
     "output_history": 4,
     "use_input_attention": false,
-    "attention_key_size": 128,
-    "attention_value_size": 128,
     "feature_embeddings_size": 32,
     "feature_embedding_layers": 1,
     "use_embeddings": false,

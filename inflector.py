@@ -237,7 +237,7 @@ class Inflector:
                  rnn="lstm", encoder_rnn_layers=1, encoder_rnn_size=32,
                  attention_key_size=32, attention_value_size=32,
                  decoder_rnn_size=32, dense_output_size=32,
-                 use_decoder_gate=False, use_copy_symbol=False,
+                 use_decoder_gate=False,
                  conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
                  history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
                  callbacks=None, step_loss_weight=0.0, auxiliary_targets=None,
@@ -279,7 +279,6 @@ class Inflector:
         self.decoder_rnn_size = decoder_rnn_size
         self.dense_output_size = dense_output_size
         self.use_decoder_gate = use_decoder_gate
-        self.use_copy_symbol = use_copy_symbol
         # self.regularizer = regularizer
         self.conv_dropout = conv_dropout
         self.encoder_rnn_dropout = encoder_rnn_dropout
@@ -405,7 +404,7 @@ class Inflector:
 
     def _make_vocabulary(self, X):
         symbols = {a for first, second, _ in X for a in first+second}
-        self.symbols_ = self.AUXILIARY + [STEP, COPY] + sorted(symbols)
+        self.symbols_ = self.AUXILIARY + [STEP] + sorted(symbols)
         self.symbol_codes_ = {a: i for i, a in enumerate(self.symbols_)}
         return self
 
@@ -559,12 +558,7 @@ class Inflector:
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
-        targets_for_history = np.array([[self.symbol_codes_[x] for x in elem] for elem in targets])
-        if self.use_copy_symbol:
-            targets = self._make_targets_with_copy(targets, lemmas, letter_positions)
-            targets = np.array([[self.symbol_codes_[x] for x in elem] for elem in targets])
-        else:
-            targets = targets_for_history
+        targets = np.array([[self.symbol_codes_[x] for x in elem] for elem in targets])
         letter_positions_by_buckets = [
             make_table(letter_positions, length, indexes, fill_with_last=True)
             for length, indexes in buckets_with_indexes]
@@ -572,7 +566,7 @@ class Inflector:
             symbol_data_by_buckets = [self._extract_symbol_data(bucket) for bucket in data_by_buckets]
         targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
                               for length, indexes in buckets_with_indexes]
-        history_targets_by_buckets = [make_table(targets_for_history, length, indexes, fill_value=PAD)
+        history_targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
                                       for length, indexes in buckets_with_indexes]
         if auxiliary_targets is not None:
             fill_values = [elem == "identity" for elem in self.auxiliary_targets]
@@ -838,11 +832,9 @@ class Inflector:
         if self.use_decoder_gate:
             gate_inputs = kl.Concatenate()([inputs, decoder_outputs])
             gate_outputs = kl.Dense(1, activation="sigmoid")(gate_inputs)
-            if self.use_copy_symbol:
-                source = kl.Lambda(make_input_with_copy_symbol)(source)
             source_inputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
                                       output_shape=(lambda x: x + (self.symbols_number,)))(source)
-            output_layer = kl.Lambda(gated_sum, arguments={"disable_first": self.use_copy_symbol},
+            output_layer = kl.Lambda(gated_sum, arguments={"disable_first": False},
                                      output_shape=(lambda x:x[0]), name="outputs")
             outputs = output_layer([source_inputs, outputs, gate_outputs])
         return outputs, initial_states, [final_h_states, final_c_states]
@@ -1115,10 +1107,6 @@ class Inflector:
                 curr_hypotheses = sorted(
                     map(list, curr_hypotheses), key=(lambda x:x[2]))[:group_beam_width]
                 group_start = j * beam_width
-                if self.use_copy_symbol:
-                    for r, hyp in enumerate(curr_hypotheses):
-                        if hyp[1] == COPY_CODE:
-                            hyp[1] = source[hyp[0], positions[hyp[0]]]
                 free_indexes = np.where(np.logical_not(
                     is_completed[group_start:group_start+beam_width]))[0]
                 free_indexes = free_indexes[:len(curr_hypotheses)] + group_start
