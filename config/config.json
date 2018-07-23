@@ -1,6 +1,8 @@
 {
   "model": {
+    "models_number": 1,
     "nepochs": 100,
+    "use_symbol_statistics": true,
     "batch_size": 16,
     "conv_layers": 0,
     "encoder_rnn_layers": 1,
@@ -11,12 +13,15 @@
     "encoder_rnn_dropout": 0.2,
     "use_decoder_gate": true,
     "output_history": 4,
-    "use_feature_embeddings": true,
+    "use_input_attention": false,
+    "attention_key_size": 128,
+    "attention_value_size": 128,
     "feature_embeddings_size": 32,
+    "feature_embedding_layers": 1,
     "use_embeddings": false,
     "embeddings_size": 32,
     "use_full_tags": false,
-    "use_output_embeddings": false,
+    "use_output_embeddings": true,
     "output_embeddings_size": 32,
     "callbacks": {
       "EarlyStopping": {

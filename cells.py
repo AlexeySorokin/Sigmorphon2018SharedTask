@@ -40,23 +40,23 @@ def calculate_history_shape(shape, h, flatten, only_last=False):
     return shape
 
 
-def make_history(X, h, pad, flatten=False, only_last=False,
-                 calculate_keras_shape=False):
+def make_history(X, h, r, pad, right_pad=None,flatten=False,
+                 only_last=False, calculate_keras_shape=False):
     if kb.backend() == "theano":
         answer = make_history_theano(X, h, pad, flatten=flatten)
     else:
-        answer = batch_shifted_fill(X, h, pad, flatten=flatten)
+        answer = batch_shifted_fill(X, h, pad, r=r, right_pad=right_pad, flatten=flatten)
     if only_last:
         # answer = answer[:,-1:]
         answer = answer[:,-1:]
     if calculate_keras_shape:
         if not hasattr(answer, "_keras_shape") and hasattr(X, "_keras_shape"):
             answer._keras_shape = calculate_history_shape(
-                X._keras_shape, h, flatten, only_last=only_last)
+                X._keras_shape, h+r, flatten, only_last=only_last)
     return answer
 
 
-def History(X, h, flatten=False, only_last=False):
+def History(X, h, r=0, flatten=False, only_last=False):
     """
     For each timestep collects h previous elements of the tensor, including current
 
@@ -66,9 +66,10 @@ def History(X, h, flatten=False, only_last=False):
         whether to concatenate h previous elements of the tensor (flatten=True),
         or stack then using a new dimension (flatten=False)
     """
-    pad = kb.zeros_like(X[0][0])
-    arguments = {"h": h, "pad": pad, "flatten": flatten, "only_last": only_last}
-    output_shape = lambda x: calculate_history_shape(x, h, flatten, only_last=only_last)
+    pad, right_pad = kb.zeros_like(X[0][0]), kb.zeros_like(X[0][0])
+    arguments = {"h": h, "r": r, "pad": pad, "right_pad": right_pad,
+                 "flatten": flatten, "only_last": only_last}
+    output_shape = lambda x: calculate_history_shape(x, h+r, flatten, only_last=only_last)
     return kl.Lambda(make_history, arguments=arguments, output_shape=output_shape)(X)
 
 def TemporalDropout(inputs, dropout=0.0):
@@ -86,3 +87,27 @@ def TemporalDropout(inputs, dropout=0.0):
                             output_shape=inputs._keras_shape[1:])(inputs_mask)
     answer = kl.Multiply()([inputs, inputs_mask])
     return answer
+
+def local_dot_attention(values, queries, keys, normalize_logits=True):
+    input_length = kb.shape(queries)[1]
+    queries = kb.reshape(queries, (-1, queries.shape[2]))
+    keys = kb.reshape(keys, (-1, keys.shape[-2], keys.shape[-1]))
+    values = kb.reshape(values, (-1, values.shape[-2], values.shape[-1]))
+    logits = kb.batch_dot(keys, queries, axes=[2, 1])
+    if normalize_logits:
+        logits /= kb.sqrt(kb.cast(kb.shape(keys)[-1], "float32"))
+    scores = kb.softmax(logits)
+    tiled_scores = kb.tile(scores[:,:,None], [1, 1, kb.shape(values)[-1]])
+    answer = kb.sum(tiled_scores * values, axis=1)
+    answer = kb.reshape(answer, (-1, input_length, answer.shape[-1]))
+    return answer
+
+def LocalAttention(inputs, keys_size, values_size, h, r, activation=None):
+    queries = kl.Dense(keys_size, activation=activation)(inputs)
+    keys = kl.Dense(keys_size, activation=activation)(inputs)
+    window_keys = History(keys, h, r, flatten=False)
+    values = kl.Dense(values_size, activation=activation)(inputs)
+    window_values = History(values, h, r, flatten=False)
+    # answer = local_dot_attention(queries, window_keys, window_values)
+    # output_shape = lambda x: x[:-1] + (values_size,)
+    return kl.Lambda(local_dot_attention, arguments={"queries": queries, "keys": window_keys})(window_values)

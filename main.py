@@ -84,20 +84,20 @@ if __name__ == "__main__":
                             alignments_outfile="alignments-{}.out".format(filename))
         if to_test:
             answer = inflector.predict(test_data, **params["predict"])
-            # outfile = os.path.join(analysis_dir, filename) if analysis_dir is not None else None
-            # if outfile is not None:
-            #     with open(outfile, "w", encoding="utf8") as fout:
-            #         for source, predictions in zip(test_data, answer):
-            #             word, descr = source[0], source[2]
-            #             for prediction in predictions:
-            #                 fout.write("{}\t{}\t{}\t{:.2f}\n".format(
-            #                     word, ";".join(descr), prediction[0], 100 * prediction[2]))
-            # pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
-            # if pred_file is not None:
-            #     with open(pred_file, "w", encoding="utf8") as fout:
-            #         for source, predictions in zip(test_data, answer):
-            #             predicted_words = [elem[0] for elem in predictions]
-            #             fout.write("\t".join([source[0], " ".join(predicted_words), ";".join(source[2])]) + "\n")
+            outfile = os.path.join(analysis_dir, filename) if analysis_dir is not None else None
+            if outfile is not None:
+                with open(outfile, "w", encoding="utf8") as fout:
+                    for source, predictions in zip(test_data, answer):
+                        word, descr = source[0], source[2]
+                        for prediction in predictions:
+                            fout.write("{}\t{}\t{}\t{:.2f}\n".format(
+                                word, ";".join(descr), prediction[0], 100 * prediction[2]))
+            pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
+            if pred_file is not None:
+                with open(pred_file, "w", encoding="utf8") as fout:
+                    for source, predictions in zip(test_data, answer):
+                        predicted_words = [elem[0] for elem in predictions]
+                        fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
             answers_for_missed = predict_missed_answers(test_data, answer, inflector, **params["predict"])
             analysis_file = os.path.join(analysis_dir, filename+"-analysis") if analysis_dir is not None else None
             output_analysis(test_data, answer, analysis_file,

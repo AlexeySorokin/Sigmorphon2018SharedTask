@@ -2,7 +2,21 @@ import bisect
 from itertools import chain
 
 import numpy as np
+import keras.backend as kb
 
+BOW, EOW, STEP, COPY = "BEGIN", "END", "STEP", "COPY"
+PAD, BEGIN, END, UNKNOWN, STEP_CODE, COPY_CODE = 0, 1, 2, 3, 4, 5
+
+
+def make_input_with_copy_symbol(source):
+    prev_step_indexes = kb.concatenate(
+        [kb.ones_like(source[:,:1], dtype="bool"), kb.equal(source[:, :-1], STEP_CODE)])
+    prev_step_indexes = kb.cast(prev_step_indexes, "int32")
+    prev_step_indexes *= kb.cast(kb.not_equal(source, STEP_CODE), "int32")
+    prev_step_indexes *= kb.cast(kb.not_equal(source, END), "int32")
+    copy_matrix = kb.ones_like(source) * COPY_CODE
+    answer = kb.switch(prev_step_indexes, copy_matrix, source)
+    return answer
 
 def to_one_hot(indices, num_classes):
     """

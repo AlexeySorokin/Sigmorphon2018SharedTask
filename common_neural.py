@@ -11,10 +11,6 @@ from keras.initializers import Constant
 from keras.callbacks import Callback, ProgbarLogger
 
 
-BOW, EOW, STEP = "BEGIN", "END", "STEP"
-PAD, BEGIN, END, UNKNOWN, STEP_CODE = 0, 1, 2, 3, 4
-
-
 class BasicMetricsProgbarLogger(ProgbarLogger):
 
     BASIC_METRICS = ["loss", "outputs_loss", "acc", "outputs_acc", "val_morphemes_acc"]
@@ -131,148 +127,148 @@ def weighted_combination(first, second, features,
     return result
 
 
-class WeightsCallback(Callback):
-
-    def __init__(self, model, symbols=None, dumpfile=None, predictions_file=None):
-        self.model = model
-        self.symbols = symbols
-        self.dumpfile = dumpfile
-        self.group_bounds = None
-        self.vectors = []
-        self.predictions_file = predictions_file
-
-    def on_train_begin(self, logs=None):
-        self.weights = []
-
-    def on_epoch_begin(self, epoch, logs=None):
-        self.weights.append([])
-
-    def on_batch_end(self, batch, logs=None):
-        self.weights[-1].append(self.model.get_weights())
-
-    def on_epoch_end(self, epoch, logs=None):
-        print("\r", end="")
-        last_weights = self.weights[-1][-1]
-        weights, bias = last_weights[0][:,0], last_weights[1][0]
-        if self.group_bounds is None:
-            self.group_bounds = [0, weights.shape[0]]
-        if epoch < 2 or epoch == self.params['epochs']-1:
-            with open(self.dumpfile, "a" if epoch > 0 else "w", encoding="utf8") as fout:
-                fout.write("Epoch {}\n".format(epoch))
-                for i, start in enumerate(self.group_bounds[:-1]):
-                    end = self.group_bounds[i+1]
-                    fout.write(",".join("{:.2f}".format(x) for x in weights[start:end]) + ";")
-                fout.write("{:.2f}\n".format(bias))
-                for key, indices in self.vectors:
-                    key = ",".join("=".join(elem) for elem in zip(*key))
-                    scores = self._make_scores(weights, bias, indices)
-                    fout.write("{}\t{}\n".format(key, self._print_scores(scores)))
-                if hasattr(self, "validation_data") and self.predictions_file is not None:
-                    outfile = "{}_{}.out".format(self.predictions_file, epoch)
-                    self._output_analysis(list(self.validation_data), outfile)
-        # print("\n")
-
-    def _make_scores(self, weights, bias, indices):
-        indices = np.nonzero(indices)
-        basic_score = np.sum(weights[indices]) + bias
-        scores = np.array([basic_score])
-        for i, start in enumerate(self.group_bounds[1:-1], 1):
-            end = self.group_bounds[i+1]
-            if end == start + 1:
-                # current feature in active or not
-                scores = np.array([scores, scores + weights[start]])
-            elif end > start + 1:
-                # exactly one of group features is active
-                scores = np.array([scores + weights[j] for j in range(start, end)])
-        scores = kb.sigmoid(scores).eval()
-        if scores.ndim > 1:
-            scores = np.transpose(scores, list(range(scores.ndim))[::-1])
-        return scores
-
-    def _print_scores(self, scores):
-        scores = np.atleast_2d(scores)
-        return ";".join(",".join("{:.2f}".format(x) for x in elem) for elem in scores)
-
-    def set_group_bounds(self, group_bounds):
-        self.group_bounds = group_bounds
-
-    def set_vectors(self, vectors):
-        self.vectors = vectors
-
-    def _output_analysis(self, data, outfile):
-        data, one_hot_answers = [x[0] for x in data], [x[1] for x in data]
-        predicted_probs = [self.model.predict(bucket) for bucket in data]
-        predictions = [np.argmax(probs, axis=-1) for probs in predicted_probs]
-        answers = [None] * len(one_hot_answers)
-        for i, elem in enumerate(one_hot_answers):
-            k, m = elem.shape[:2]
-            nonzero_columns = np.nonzero(elem)[-1]
-            answers[i] = nonzero_columns.reshape((k, m))
-        analysis = []
-        for elem in zip(data, predicted_probs, predictions, answers):
-            analysis.extend(self._extract_analysis(*elem))
-        with open(outfile, "w", encoding="utf8") as fout:
-            for corr, predicted, data in analysis:
-                fout.write("{}\t{}".format(corr, predicted))
-                newline = True
-                for symbol_data, error_data in data:
-                    if len(error_data) == 0:
-                        fout.write("\n" if newline else "\t")
-                        fout.write("{} {:.1f},{:.1f},{:.1f}".format(
-                            symbol_data[0], 100*symbol_data[1], 100*symbol_data[2], 100*symbol_data[3]))
-                        newline = False
-                    else:
-                        fout.write("\n")
-                        fout.write("{} {:.1f},{:.1f},{:.1f}".format(
-                            symbol_data[0], 100*symbol_data[1], 100*symbol_data[2], 100*symbol_data[3]))
-                        for elem in error_data:
-                            fout.write("\t{} {:.1f},{:.1f},{:.1f}".format(
-                                elem[0], 100*elem[1], 100*elem[2], 100*elem[3]))
-                        newline = True
-                fout.write("\n\n")
-        return
-
-    def _extract_analysis(self, source, probs, predicted, corr):
-        base_probs, lm_probs = source[:2]
-        answer = []
-        for base_word_probs, lm_word_probs, word_probs, letters, corr_letters in\
-                zip(base_probs, lm_probs, probs, predicted, corr):
-            i, j = 1, 1 # positions in letters and corr_letters
-            has_error, word_data = False, []
-            corr_word, predicted_word = "", ""
-            while i < len(letters) and j < len(corr_letters):
-                letter, corr_letter = letters[i], corr_letters[j]
-                curr_probs, curr_lm_probs = word_probs[i], lm_word_probs[i]
-                if letter == END and corr_letter == END:
-                    break
-                if corr_letter == STEP_CODE and letter == STEP_CODE:
-                    i, j = i+1, j+1
-                    continue
-                prob, base_prob = curr_probs[corr_letter], base_word_probs[i, corr_letter]
-                lm_letter = corr_letter - int(corr_letter > STEP_CODE)
-                lm_prob = curr_lm_probs[lm_letter] if corr_letter != STEP_CODE else 0.0
-                symbol_data = (self.symbols[corr_letter], prob, base_prob, lm_prob)
-                if letter != corr_letter:
-                    symbol_indexes = np.where(curr_probs > curr_probs[corr_letter])[0]
-                    symbol_indexes = sorted(
-                        symbol_indexes, key=(lambda x: curr_probs[x]), reverse=True)[:5]
-                    candidate_lm_probs = [(curr_lm_probs[x - int(x > STEP_CODE)]
-                                           if x != STEP_CODE else 0.0) for x in symbol_indexes]
-                    error_data = [(self.symbols[x], curr_probs[x], base_word_probs[i,x], p)
-                                  for x, p in zip(symbol_indexes, candidate_lm_probs)]
-                else:
-                    error_data = []
-                word_data.append((symbol_data, error_data))
-                i += int(letter != STEP_CODE)
-                j += int(corr_letter != STEP_CODE)
-                has_error |= (letter != corr_letter)
-                if letter > STEP_CODE:
-                    predicted_word += self.symbols[letter]
-                if corr_letter > STEP_CODE:
-                    corr_word += self.symbols[corr_letter]
-            if has_error:
-                answer.append((corr_word, predicted_word, word_data))
-        return answer
+# class WeightsCallback(Callback):
+#
+#     def __init__(self, model, symbols=None, dumpfile=None, predictions_file=None):
+#         self.model = model
+#         self.symbols = symbols
+#         self.dumpfile = dumpfile
+#         self.group_bounds = None
+#         self.vectors = []
+#         self.predictions_file = predictions_file
+#
+#     def on_train_begin(self, logs=None):
+#         self.weights = []
+#
+#     def on_epoch_begin(self, epoch, logs=None):
+#         self.weights.append([])
+#
+#     def on_batch_end(self, batch, logs=None):
+#         self.weights[-1].append(self.model.get_weights())
+#
+#     def on_epoch_end(self, epoch, logs=None):
+#         print("\r", end="")
+#         last_weights = self.weights[-1][-1]
+#         weights, bias = last_weights[0][:,0], last_weights[1][0]
+#         if self.group_bounds is None:
+#             self.group_bounds = [0, weights.shape[0]]
+#         if epoch < 2 or epoch == self.params['epochs']-1:
+#             with open(self.dumpfile, "a" if epoch > 0 else "w", encoding="utf8") as fout:
+#                 fout.write("Epoch {}\n".format(epoch))
+#                 for i, start in enumerate(self.group_bounds[:-1]):
+#                     end = self.group_bounds[i+1]
+#                     fout.write(",".join("{:.2f}".format(x) for x in weights[start:end]) + ";")
+#                 fout.write("{:.2f}\n".format(bias))
+#                 for key, indices in self.vectors:
+#                     key = ",".join("=".join(elem) for elem in zip(*key))
+#                     scores = self._make_scores(weights, bias, indices)
+#                     fout.write("{}\t{}\n".format(key, self._print_scores(scores)))
+#                 if hasattr(self, "validation_data") and self.predictions_file is not None:
+#                     outfile = "{}_{}.out".format(self.predictions_file, epoch)
+#                     self._output_analysis(list(self.validation_data), outfile)
+#         # print("\n")
+#
+#     def _make_scores(self, weights, bias, indices):
+#         indices = np.nonzero(indices)
+#         basic_score = np.sum(weights[indices]) + bias
+#         scores = np.array([basic_score])
+#         for i, start in enumerate(self.group_bounds[1:-1], 1):
+#             end = self.group_bounds[i+1]
+#             if end == start + 1:
+#                 # current feature in active or not
+#                 scores = np.array([scores, scores + weights[start]])
+#             elif end > start + 1:
+#                 # exactly one of group features is active
+#                 scores = np.array([scores + weights[j] for j in range(start, end)])
+#         scores = kb.sigmoid(scores).eval()
+#         if scores.ndim > 1:
+#             scores = np.transpose(scores, list(range(scores.ndim))[::-1])
+#         return scores
+#
+#     def _print_scores(self, scores):
+#         scores = np.atleast_2d(scores)
+#         return ";".join(",".join("{:.2f}".format(x) for x in elem) for elem in scores)
+#
+#     def set_group_bounds(self, group_bounds):
+#         self.group_bounds = group_bounds
+#
+#     def set_vectors(self, vectors):
+#         self.vectors = vectors
+#
+#     def _output_analysis(self, data, outfile):
+#         data, one_hot_answers = [x[0] for x in data], [x[1] for x in data]
+#         predicted_probs = [self.model.predict(bucket) for bucket in data]
+#         predictions = [np.argmax(probs, axis=-1) for probs in predicted_probs]
+#         answers = [None] * len(one_hot_answers)
+#         for i, elem in enumerate(one_hot_answers):
+#             k, m = elem.shape[:2]
+#             nonzero_columns = np.nonzero(elem)[-1]
+#             answers[i] = nonzero_columns.reshape((k, m))
+#         analysis = []
+#         for elem in zip(data, predicted_probs, predictions, answers):
+#             analysis.extend(self._extract_analysis(*elem))
+#         with open(outfile, "w", encoding="utf8") as fout:
+#             for corr, predicted, data in analysis:
+#                 fout.write("{}\t{}".format(corr, predicted))
+#                 newline = True
+#                 for symbol_data, error_data in data:
+#                     if len(error_data) == 0:
+#                         fout.write("\n" if newline else "\t")
+#                         fout.write("{} {:.1f},{:.1f},{:.1f}".format(
+#                             symbol_data[0], 100*symbol_data[1], 100*symbol_data[2], 100*symbol_data[3]))
+#                         newline = False
+#                     else:
+#                         fout.write("\n")
+#                         fout.write("{} {:.1f},{:.1f},{:.1f}".format(
+#                             symbol_data[0], 100*symbol_data[1], 100*symbol_data[2], 100*symbol_data[3]))
+#                         for elem in error_data:
+#                             fout.write("\t{} {:.1f},{:.1f},{:.1f}".format(
+#                                 elem[0], 100*elem[1], 100*elem[2], 100*elem[3]))
+#                         newline = True
+#                 fout.write("\n\n")
+#         return
+#
+#     def _extract_analysis(self, source, probs, predicted, corr):
+#         base_probs, lm_probs = source[:2]
+#         answer = []
+#         for base_word_probs, lm_word_probs, word_probs, letters, corr_letters in\
+#                 zip(base_probs, lm_probs, probs, predicted, corr):
+#             i, j = 1, 1 # positions in letters and corr_letters
+#             has_error, word_data = False, []
+#             corr_word, predicted_word = "", ""
+#             while i < len(letters) and j < len(corr_letters):
+#                 letter, corr_letter = letters[i], corr_letters[j]
+#                 curr_probs, curr_lm_probs = word_probs[i], lm_word_probs[i]
+#                 if letter == END and corr_letter == END:
+#                     break
+#                 if corr_letter == STEP_CODE and letter == STEP_CODE:
+#                     i, j = i+1, j+1
+#                     continue
+#                 prob, base_prob = curr_probs[corr_letter], base_word_probs[i, corr_letter]
+#                 lm_letter = corr_letter - int(corr_letter > STEP_CODE)
+#                 lm_prob = curr_lm_probs[lm_letter] if corr_letter != STEP_CODE else 0.0
+#                 symbol_data = (self.symbols[corr_letter], prob, base_prob, lm_prob)
+#                 if letter != corr_letter:
+#                     symbol_indexes = np.where(curr_probs > curr_probs[corr_letter])[0]
+#                     symbol_indexes = sorted(
+#                         symbol_indexes, key=(lambda x: curr_probs[x]), reverse=True)[:5]
+#                     candidate_lm_probs = [(curr_lm_probs[x - int(x > STEP_CODE)]
+#                                            if x != STEP_CODE else 0.0) for x in symbol_indexes]
+#                     error_data = [(self.symbols[x], curr_probs[x], base_word_probs[i,x], p)
+#                                   for x, p in zip(symbol_indexes, candidate_lm_probs)]
+#                 else:
+#                     error_data = []
+#                 word_data.append((symbol_data, error_data))
+#                 i += int(letter != STEP_CODE)
+#                 j += int(corr_letter != STEP_CODE)
+#                 has_error |= (letter != corr_letter)
+#                 if letter > STEP_CODE:
+#                     predicted_word += self.symbols[letter]
+#                 if corr_letter > STEP_CODE:
+#                     corr_word += self.symbols[corr_letter]
+#             if has_error:
+#                 answer.append((corr_word, predicted_word, word_data))
+#         return answer
 
 
 

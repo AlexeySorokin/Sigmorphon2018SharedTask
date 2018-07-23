@@ -62,13 +62,13 @@ def batch_shifted_fill(a, h, pad, r=0, right_pad=None, flatten=False):
     pad = _broadcast_pad(pad, a, h-1)
     a_padded = tf.concat([pad, a], axis=1)
     if r > 0:
-        right_pad = _broadcast_pad(right_pad, a, r-1)
-        a_padded = tf.concat([a, right_pad], axis=1)
+        right_pad = _broadcast_pad(right_pad, a, r)
+        a_padded = tf.concat([a_padded, right_pad], axis=1)
     answer_shape = tf.concat([[tf.shape(a)[0], 0, h+r], tf.cast(a.shape[2:], tf.int32)], axis=0)
     i, answer = h-1+r, tf.zeros(answer_shape, dtype=a.dtype)
     cond = lambda i, ans, a, k: i < tf.shape(a_padded)[1]
     body = lambda i, ans, a, k: (
-        i+1, tf.concat([ans, tf.expand_dims(a_padded[:,i-k-r+1:i+1], 1)], axis=1), a, k)
+        i+1, tf.concat([ans, tf.expand_dims(a_padded[:,i-k+1:i+1], 1)], axis=1), a, k)
     ans_shape = [None, None, h+r] + a_padded.shape[2:].as_list()
     _, answer_, _, _ = tf.while_loop(
         cond, body, [i, answer, a_padded, h+r],
@@ -78,5 +78,5 @@ def batch_shifted_fill(a, h, pad, r=0, right_pad=None, flatten=False):
         outer_shape = tf.shape(answer_)
         elem_shape = [ans_shape[2] * ans_shape[3]] + ans_shape[4:]
         new_shape = tf.concat([outer_shape[:2], elem_shape], axis=0)
-        answer = tf.reshape(answer_, new_shape)
-    return answer
+        answer_ = tf.reshape(answer_, new_shape)
+    return answer_

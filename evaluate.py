@@ -9,11 +9,11 @@ from read import read_languages_infile, read_infile, MODES
 WIDTHS = [16, 6]
 
 
-def evaluate_files(infile, corr_file):
+def evaluate_files(infile, corr_file, sep=" "):
     test_data, corr_data = read_infile(infile), read_infile(corr_file)
     corr, cov, total, total_dist, best_dist = 0, 0, len(test_data), 0.0, 0.0
     for test_elem, corr_elem in zip(test_data, corr_data):
-        test_words = test_elem[1].split()
+        test_words = test_elem[1].split(sep)
         corr_word = corr_elem[1]
         if corr_word == test_words[0]:
             corr += 1
@@ -43,11 +43,11 @@ def get_format_string(x, width=None):
     else:
         return "{}"
 
-SHORT_OPTS = "l:o:t:c:v"
+SHORT_OPTS = "l:o:t:c:vs:m:"
 
 if __name__ == "__main__":
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
-    languages, outfile, verbose = None, None, False
+    languages, outfile, verbose, sep, model_name = None, None, False, " ", None
     test_dir, corr_dir = "conll2018/task1/baseline-results", "conll2018/task1/all"
     for opt, val in opts:
         if opt == "-l":
@@ -60,13 +60,20 @@ if __name__ == "__main__":
             corr_dir = val
         elif opt == "-v":
             verbose = True
+        elif opt == "-s":
+            sep = val
+        elif opt == "-m":
+            model_name = val
     if languages is None:
         languages = [tuple(elem.rsplit("-", maxsplit=2)[:2]) for elem in os.listdir(test_dir)]
     results = []
     for language, mode in languages:
-        infile = os.path.join(test_dir, "{}-{}-out".format(language, mode))
+        filename = "{}-{}-out".format(language, mode)
+        if model_name is not None:
+            filename = "{}-{}".format(model_name, filename)
+        infile = os.path.join(test_dir, filename)
         corr_file = os.path.join(corr_dir, "{}-dev".format(language))
-        results.append([language, mode] + list(evaluate_files(infile, corr_file)))
+        results.append([language, mode] + list(evaluate_files(infile, corr_file, sep=sep)))
     if outfile is not None:
         results.sort(key = lambda x: (x[0], MODES.index(x[1])))
         with open(outfile, "w", encoding="utf8") as fout:
