@@ -1,8 +1,12 @@
+from keras.models import Layer, Model
+
 import keras.layers as kl
 import keras.backend as kb
+from keras.engine.topology import InputSpec
+
 
 if kb.backend() == "theano":
-    from cells_theano import make_history_theano
+    from neural.cells_theano import make_history_theano
 elif kb.backend() == "tensorflow":
     from common_tensorflow import batch_shifted_fill
 
@@ -72,6 +76,77 @@ def History(X, h, r=0, flatten=False, only_last=False):
     output_shape = lambda x: calculate_history_shape(x, h+r, flatten, only_last=only_last)
     return kl.Lambda(make_history, arguments=arguments, output_shape=output_shape)(X)
 
+
+class AttentionCell(Layer):
+    """
+    A layer collecting in each position a weighted sum of previous words embeddings
+    where weights in the sum are calculated using attention
+    """
+
+    def __init__(self, left, input_dim, query_dim=None, output_dim=None,
+                 right=0, merge="concatenate",  use_bias=False, **kwargs):
+        if 'input_shape' not in kwargs:
+            kwargs['input_shape'] = (None, None, input_dim)
+        super(AttentionCell, self).__init__(**kwargs)
+        self.left = left
+        self.right = right
+        self.merge = merge
+        self.use_bias = use_bias
+        self.input_dim = input_dim
+        self.query_dim = query_dim or self.input_dim
+        self.output_dim = output_dim or self.input_dim
+        self.input_spec = InputSpec(shape=(None, None, input_dim))
+
+    def build(self, input_shape):
+        assert len(input_shape) == 3
+        self.M = self.add_weight(shape=(self.input_dim, self.query_dim),
+                                 name='attention_embedding_1', dtype=self.dtype,
+                                 initializer="glorot_uniform")
+        self.C = self.add_weight(shape=(self.input_dim, self.query_dim),
+                                 name='attention_embedding_2', dtype=self.dtype,
+                                 initializer="glorot_uniform")
+        if self.use_bias:
+            self.T = self.add_weight(shape=(self.left, self.query_dim),
+                                     name='bias', dtype=self.dtype,
+                                     initializer="glorot_uniform")
+        self.V = self.add_weight(shape=(self.input_dim, self.output_dim),
+                                 name='attention_embedding_2', dtype=self.dtype,
+                                 initializer="glorot_uniform")
+        super(AttentionCell, self).build(input_shape)
+
+    def call(self, inputs, **kwargs):
+        # contexts.shape = (M, T, left, d)
+        queries, keys = kb.dot(inputs, self.M), kb.dot(inputs, self.C)
+        pad = kb.zeros_like(keys[0][0])
+        keys = make_history(keys, self.left, pad=pad, r=self.right, right_pad=pad, flatten=False)
+        if self.use_bias:
+            keys += self.T
+        values = kb.dot(inputs, self.V)
+        values = make_history(values, self.left, pad=kb.zeros_like(values[0][0]),
+                              r=self.right, right_pad=kb.zeros_like(values[0][0]),
+                              flatten=False)
+        answer = local_dot_attention(values, queries, keys)
+        if self.merge == "concatenate":
+            answer = kb.concatenate([inputs, answer], axis=-1)
+        elif self.merge == "sum":
+            answer += inputs
+        return answer
+
+    def compute_output_shape(self, input_shape):
+        last_dim = (self.input_dim if self.merge == "sum" else
+                    self.input_dim+self.output_dim if self.merge == "concatenate" else
+                    self.output_dim)
+        return input_shape[:-1] + (last_dim,)
+
+
+def attention_func(inputs, only_last=False, **kwargs):
+    answer = AttentionCell(**kwargs)(inputs)
+    if only_last:
+        return answer
+    return kl.Lambda(lambda x: x[:,-1:])(answer)
+
+
+
 def TemporalDropout(inputs, dropout=0.0):
     """
     Drops with :dropout probability temporal steps of input 3D tensor
@@ -88,7 +163,7 @@ def TemporalDropout(inputs, dropout=0.0):
     answer = kl.Multiply()([inputs, inputs_mask])
     return answer
 
-def local_dot_attention(values, queries, keys, normalize_logits=True):
+def local_dot_attention(values, queries, keys, normalize_logits=False):
     input_length = kb.shape(queries)[1]
     queries = kb.reshape(queries, (-1, queries.shape[2]))
     keys = kb.reshape(keys, (-1, keys.shape[-2], keys.shape[-1]))

@@ -6,7 +6,7 @@ import keras.backend as kb
 
 BOW, EOW, STEP, COPY = "BEGIN", "END", "STEP", "COPY"
 PAD, BEGIN, END, UNKNOWN, STEP_CODE, COPY_CODE = 0, 1, 2, 3, 4, 5
-
+AUXILIARY = ['PAD', BOW, EOW, 'UNKNOWN']
 
 def make_input_with_copy_symbol(source):
     prev_step_indexes = kb.concatenate(

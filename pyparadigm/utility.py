@@ -1,9 +1,4 @@
-﻿import sys
-import bisect
-
-import numpy as np
-
-from cutility import _find_indexes, _extract_ordered_sequences
+﻿from pyparadigm.cutility import _find_indexes, _extract_ordered_sequences
 
 def extract_ordered_sequences(lists, min_differences=None, max_differences=None,
                               strict_min=True, strict_max=False):

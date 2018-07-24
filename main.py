@@ -9,7 +9,6 @@ import keras.backend.tensorflow_backend as kbt
 from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector, predict_missed_answers
 from write import output_analysis
-from mcmc_aligner import Aligner
 
 DEFAULT_PARAMS = {"beam_width": 1}
 
@@ -65,8 +64,7 @@ if __name__ == "__main__":
         test_file = os.path.join(corr_dir, "{}-dev".format(language))
         data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
         data *= params.get("data_multiple", 1)
-        if mode != "high":
-            dev_data = test_data[:]
+        dev_data = test_data[:]
         # test_data = test_data[:20]
         # data_for_alignment = [elem[:2] for elem in data]
         # aligner = Aligner(n_iter=1, separate_endings=True, init="lcs",

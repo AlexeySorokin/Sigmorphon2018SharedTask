@@ -1,5 +1,3 @@
-import sys
-
 from functools import reduce
 from itertools import product, chain
 from collections import defaultdict, OrderedDict, deque
@@ -8,8 +6,8 @@ import copy
 from bs4 import BeautifulSoup
 import numpy as np
 
-from utility import extract_ordered_sequences, find_optimal_cover_elements
-from graph_utilities import Graph
+from pyparadigm.utility import extract_ordered_sequences, find_optimal_cover_elements
+from pyparadigm.graph_utilities import Graph
 # from common import LEMMA_KEY, get_categories_marks, get_possible_lemma_marks
 
 

@@ -1,5 +1,6 @@
 MODES = ["low", "medium", "high"]
 
+
 def read_languages_infile(infile):
     answer = set()
     with open(infile, "r", encoding="utf8") as fin:
@@ -16,7 +17,7 @@ def read_languages_infile(infile):
     return answer
 
 
-def read_infile(infile):
+def read_infile(infile, for_lm=False):
     answer = []
     with open(infile, "r", encoding="utf8") as fin:
         for line in fin:
@@ -24,7 +25,7 @@ def read_infile(infile):
             if len(splitted) != 3:
                 continue
             splitted[2] = splitted[2].split(";")
-            answer.append(splitted)
+            answer.append(splitted[1:] if for_lm else splitted)
     return answer
 
 

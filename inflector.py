@@ -4,10 +4,10 @@ import ujson as json
 from collections import defaultdict
 
 
-from common import *
-from common_neural import *
-from cells import MultiConv1D, TemporalDropout, History, LocalAttention
-from mcmc_aligner import Aligner, output_alignment
+from neural.common import *
+from neural.common_neural import *
+from neural.cells import MultiConv1D, TemporalDropout, History, LocalAttention
+from aligner.mcmc_aligner import Aligner, output_alignment
 
 import keras.backend as kb
 if kb.backend() == "tensorflow":
@@ -216,7 +216,6 @@ def load_inflector(infile):
 
 class Inflector:
 
-    AUXILIARY = ['PAD', BOW, EOW, 'UNKNOWN']
     UNKNOWN_FEATURE = 0
 
     DEFAULT_ALIGNER_PARAMS = {"init_params": {"gap": 1, "initial_gap": 0}, "n_iter": 5,
@@ -315,7 +314,7 @@ class Inflector:
         if isinstance(self.rnn, str):
             self.rnn = getattr(kl, self.rnn.upper())
         if self.rnn not in [kl.GRU, kl.LSTM]:
-            self.rnn = None
+            raise ValueError("Unknown recurrent network: {}".format(self.rnn))
         if self.auxiliary_targets_number:
             for attr in ["auxiliary_target_weights", "auxiliary_dense_units"]:
                 value = getattr(self, attr)
@@ -408,7 +407,7 @@ class Inflector:
 
     def _make_vocabulary(self, X):
         symbols = {a for first, second, _ in X for a in first+second}
-        self.symbols_ = self.AUXILIARY + [STEP] + sorted(symbols)
+        self.symbols_ = AUXILIARY + [STEP] + sorted(symbols)
         self.symbol_codes_ = {a: i for i, a in enumerate(self.symbols_)}
         return self
 
@@ -433,7 +432,7 @@ class Inflector:
             pos_labels.add(pos_label)
             feature_labels.update(curr_feature_labels)
             tags.add(tuple(elem))
-        self.labels_ = self.AUXILIARY + sorted(pos_labels) + sorted(feature_labels)
+        self.labels_ = AUXILIARY + sorted(pos_labels) + sorted(feature_labels)
         self.label_codes_ = {x: i for i, x in enumerate(self.labels_)}
         if self.use_full_tags:
             self.tags_ = sorted(tags)
@@ -459,7 +458,7 @@ class Inflector:
         bucket_data[:,0] = BEGIN
         for j, i in enumerate(bucket_indexes):
             lemma = lemmas[i]
-            bucket_data[j,1:1+len(lemma)] = [self.symbol_codes_[x] for x in lemma]
+            bucket_data[j,1:1+len(lemma)] = [self.symbol_codes_.get(x, UNKNOWN) for x in lemma]
             bucket_data[j,1+len(lemma)] = END
         return bucket_data
 
@@ -562,7 +561,7 @@ class Inflector:
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
-        targets = np.array([[self.symbol_codes_[x] for x in elem] for elem in targets])
+        targets = np.array([[self.symbol_codes_.get(x, UNKNOWN) for x in elem] for elem in targets])
         letter_positions_by_buckets = [
             make_table(letter_positions, length, indexes, fill_with_last=True)
             for length, indexes in buckets_with_indexes]
@@ -1236,7 +1235,7 @@ class Inflector:
             probs_to_return.append(curr_prob_log)
             curr_prob_log = 0.0
             # разобраться с UNKNOWN!
-            if self.symbols_[index] not in self.AUXILIARY:
+            if self.symbols_[index] not in AUXILIARY:
                 word += self.symbols_[index]
         answer = [word, probs_to_return, np.sum(probs_to_return)]
         if return_alignment_positions:
