@@ -1,8 +1,8 @@
 {
   "model": {
-    "models_number": 1,
+    "models_number": 3,
     "nepochs": 100,
-    "use_symbol_statistics": true,
+    "use_symbol_statistics": false,
     "batch_size": 16,
     "conv_layers": 0,
     "encoder_rnn_layers": 1,
@@ -11,14 +11,15 @@
     "dense_output_size": 32,
     "decoder_dropout": 0.2,
     "encoder_rnn_dropout": 0.2,
-    "use_decoder_gate": true,
+    "use_decoder_gate": "step",
+    "features_after_decoder": false,
     "output_history": 4,
     "use_input_attention": false,
     "feature_embeddings_size": 32,
     "feature_embedding_layers": 1,
     "use_embeddings": false,
     "embeddings_size": 32,
-    "use_full_tags": false,
+    "use_full_tags": true,
     "use_output_embeddings": true,
     "output_embeddings_size": 32,
     "callbacks": {
@@ -28,5 +29,5 @@
       }
     }
   },
-  "predict": {"beam_width": 5}
+  "predict": {"beam_width": 5, "beam_growth": 3, "prune_start": 3}
 }

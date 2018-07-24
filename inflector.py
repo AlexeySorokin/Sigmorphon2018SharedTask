@@ -237,10 +237,12 @@ class Inflector:
                  rnn="lstm", encoder_rnn_layers=1, encoder_rnn_size=32,
                  attention_key_size=32, attention_value_size=32,
                  decoder_rnn_size=32, dense_output_size=32,
-                 use_decoder_gate=False,
+                 use_decoder_gate="",
+                 features_after_decoder=False,
                  conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
                  history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
-                 callbacks=None, step_loss_weight=0.0, auxiliary_targets=None,
+                 callbacks=None,
+                 step_loss_weight=0.0, auxiliary_targets=None,
                  auxiliary_target_weights=None, auxiliary_dense_units=None,
                  encode_auxiliary_symbol_outputs=False,
                  use_lm=False, min_prob=0.01, max_diff=2.0,
@@ -279,6 +281,7 @@ class Inflector:
         self.decoder_rnn_size = decoder_rnn_size
         self.dense_output_size = dense_output_size
         self.use_decoder_gate = use_decoder_gate
+        self.features_after_decoder = features_after_decoder
         # self.regularizer = regularizer
         self.conv_dropout = conv_dropout
         self.encoder_rnn_dropout = encoder_rnn_dropout
@@ -286,6 +289,7 @@ class Inflector:
         self.history_dropout = history_dropout
         self.decoder_dropout = decoder_dropout
         self.regularizer = regularizer
+
         self.step_loss_weight = step_loss_weight
         self.auxiliary_targets = auxiliary_targets or []
         self.auxiliary_target_weights = auxiliary_target_weights
@@ -814,13 +818,18 @@ class Inflector:
         return outputs
 
     def _build_decoder_network(self, inputs, source):
-        inputs = kl.Concatenate()(inputs)
+        to_concatenate = [inputs[0]] + inputs[2:] if self.features_after_decoder else inputs
+        concatenated_inputs = kl.Concatenate()(to_concatenate)
         decoder = kl.LSTM(self.decoder_rnn_size, dropout=self.decoder_dropout,
                           return_sequences=True, return_state=True)
-        initial_states = [kb.zeros_like(inputs[:,0,0]), kb.zeros_like(inputs[:,0,0])]
+        initial_states = [kb.zeros_like(concatenated_inputs[:,0,0]),
+                          kb.zeros_like(concatenated_inputs[:,0,0])]
         for i, elem in enumerate(initial_states):
             initial_states[i] = kb.tile(elem[:,None], [1, self.decoder_rnn_size])
-        decoder_outputs, final_h_states, final_c_states = decoder(inputs, initial_state=initial_states)
+        decoder_outputs, final_h_states, final_c_states =\
+            decoder(concatenated_inputs, initial_state=initial_states)
+        if self.features_after_decoder:
+            decoder_outputs = kl.Concatenate()([decoder_outputs, inputs[1]])
         pre_outputs = kl.TimeDistributed(kl.Dense(
             self.dense_output_size, activation="relu", use_bias=False,
             input_shape=(self.decoder_rnn_size,)))(decoder_outputs)
@@ -830,13 +839,24 @@ class Inflector:
             activity_regularizer=kreg.l2(self.regularizer),
             input_shape=(self.dense_output_size,)))(pre_outputs)
         if self.use_decoder_gate:
-            gate_inputs = kl.Concatenate()([inputs, decoder_outputs])
-            gate_outputs = kl.Dense(1, activation="sigmoid")(gate_inputs)
+            concatenated_inputs = kl.Concatenate()(inputs)
+            gate_inputs = kl.Concatenate()([concatenated_inputs, decoder_outputs])
+
             source_inputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
                                       output_shape=(lambda x: x + (self.symbols_number,)))(source)
-            output_layer = kl.Lambda(gated_sum, arguments={"disable_first": False},
-                                     output_shape=(lambda x:x[0]), name="outputs")
-            outputs = output_layer([source_inputs, outputs, gate_outputs])
+            if self.use_decoder_gate == "step":
+                gate_outputs = kl.Dense(3, activation="softmax")(gate_inputs)
+                step_inputs = kl.Lambda(lambda x: kb.ones_like(x) * STEP_CODE)(source)
+                step_inputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
+                                        output_shape=(lambda x: x + (self.symbols_number,)))(step_inputs)
+                output_layer = kl.Lambda(multigated_sum, arguments={"disable_first": True},
+                                         output_shape=(lambda x: x[0]), name="outputs")
+                outputs = output_layer([source_inputs, step_inputs, outputs, gate_outputs])
+            else:
+                gate_outputs = kl.Dense(1, activation="sigmoid")(gate_inputs)
+                output_layer = kl.Lambda(gated_sum, arguments={"disable_first": False},
+                                         output_shape=(lambda x:x[0]), name="outputs")
+                outputs = output_layer([source_inputs, outputs, gate_outputs])
         return outputs, initial_states, [final_h_states, final_c_states]
 
     def _build_auxiliary_objective_network(self, inputs, feature_inputs, units_number,
@@ -951,7 +971,7 @@ class Inflector:
         return inputs, encoded_answers_by_buckets
 
     def predict(self, data, known_answers=None, return_alignment_positions=False,
-                return_log=False, beam_width=1, verbose=0):
+                return_log=False, verbose=0, **kwargs):
         """
 
         Parameters:
@@ -976,8 +996,7 @@ class Inflector:
                 print("Bucket {} of {} predicting".format(
                     bucket_number+1, len(buckets_with_indexes)))
             bucket_words, bucket_probs = self._predict_on_batch(
-                *elem, beam_width=beam_width,
-                known_answers=encoded_answers_by_buckets[bucket_number])
+                *elem, known_answers=encoded_answers_by_buckets[bucket_number], **kwargs)
             _, bucket_indexes = buckets_with_indexes[bucket_number]
             for i, curr_words, curr_probs in zip(bucket_indexes, bucket_words, bucket_probs):
                 for curr_symbols, curr_prob in zip(curr_words, curr_probs):
@@ -1006,7 +1025,8 @@ class Inflector:
 
 
     def _predict_on_batch(self, symbols, features, target_history, source,
-                          steps_history=None, beam_width=1, known_answers=None):
+                          steps_history=None, beam_width=1, beam_growth=None,
+                          prune_start=0, known_answers=None):
         """
 
         symbols: np.array of float, shape=(models_number, m, L, H)
@@ -1018,6 +1038,7 @@ class Inflector:
         :param target_history:
         :return:
         """
+        beam_growth = beam_growth or beam_width
         _, m, L, H = symbols.shape
         M = m * beam_width
         # positions[j] --- текущая позиция в symbols[j]
@@ -1088,8 +1109,11 @@ class Inflector:
                     curr_probs = -np.log10(curr_probs)   # переходим к логарифмической шкале
                     if np.isinf(curr_best_scores[group_index]):
                         curr_best_scores[group_index] = prev_partial_score + np.min(curr_probs)
-                    min_log_prob = curr_best_scores[group_index] - prev_partial_score + self.max_diff
-                    min_log_prob = min(-np.log10(self.min_prob), min_log_prob)
+                    if i >= prune_start:
+                        min_log_prob = curr_best_scores[group_index] - prev_partial_score + self.max_diff
+                        min_log_prob = min(-np.log10(self.min_prob), min_log_prob)
+                    else:
+                        min_log_prob = 5
                     if known_answers is None:
                         possible_indexes = np.where(curr_probs <= min_log_prob)[0]
                     else:
@@ -1100,6 +1124,8 @@ class Inflector:
                         new_score = prev_partial_score + curr_probs[index]
                         hyp = (j, index, new_score, curr_probs[index], new_h_states[r], new_c_states[r])
                         hypotheses_by_groups[group_index].append(hyp)
+                    hypotheses_by_groups[group_index] =\
+                        sorted(hypotheses_by_groups[group_index], key=lambda x:x[2])[:beam_growth]
             for j, (curr_hypotheses, group_beam_width) in\
                     enumerate(zip(hypotheses_by_groups, group_beam_widths)):
                 if group_beam_width == 0:
@@ -1236,13 +1262,12 @@ class Inflector:
     #             answer[index] = curr_answer
     #     return predictions, answer
 
-def predict_missed_answers(test_data, answers, inflector, beam_width=1):
+def predict_missed_answers(test_data, answers, inflector, **kwargs):
     indexes = [i for i, x in enumerate(test_data)
                if x[1] not in [elem[0] for elem in answers[i]]]
     data_with_missed_answers = [test_data[i] for i in indexes]
     known_answers = [elem[1] for elem in data_with_missed_answers]
-    scores = inflector.predict(data_with_missed_answers,
-                               known_answers, beam_width=beam_width)
+    scores = inflector.predict(data_with_missed_answers, known_answers, **kwargs)
     answer = [(index, elem[0]) for index, elem in zip(indexes, scores)]
     return answer
 

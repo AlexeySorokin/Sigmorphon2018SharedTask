@@ -59,8 +59,7 @@ def output_analysis(test_data, answers, outfile, has_alignment=False,
                 counts_by_descrs.items(), key=(lambda x: x[1][1] / (x[1][0] + x[1][1]))):
             quality = corr_count / (corr_count+false_count)
             fout.write("{}\tПравильно: {}, Всего: {}, Качество: {:.2f}\n{}\n".format(
-                ",".join("{}={}".format(*x) for x in zip(*descr)),
-                corr_count, corr_count+false_count, 100*quality, "="*40+"\n"))
+                descr, corr_count, corr_count+false_count, 100*quality, "="*40+"\n"))
             for index in indexes_by_descrs[descr]:
                 output_word_predictions(test_data[index], answers[index], fout,
                                         missed_answer=answers_for_missed.get(index),

@@ -43,6 +43,18 @@ class ClassCrossEntropy:
         return loss
 
 
+class HingeLoss:
+
+    def __init__(self, margin=1.0):
+        self.margin = margin
+
+    def __call__(self, y_true, y_pred):
+        y_pred_other = y_pred * (1 - y_true)
+        max_probs = kb.max(y_pred_other, axis=-1)
+        corr_probs = kb.sum(y_pred * y_true, axis=-1)
+        loss = kb.maximum(self.margin + kb.log(max_probs) - kb.log(corr_probs), 0.0)
+        return loss
+
 def gated_sum(X, disable_first=False):
     first, second, sigma = X
     tiling_shape = [kb.shape(first)[i] for i in range(kb.ndim(first))]
@@ -53,6 +65,23 @@ def gated_sum(X, disable_first=False):
     if disable_first:
         second *= (1.0 - first)
     answer = first * sigma + second * (1.0 - sigma)
+    return answer
+
+def multigated_sum(X, disable_first=False):
+    data, sigma = X[:-1], X[-1]
+    indexes = [kb.ndim(sigma)-1] + list(range(kb.ndim(sigma)-1))
+    sigma = kb.permute_dimensions(sigma, indexes)
+    tiling_shape = [1] + [kb.shape(data[0])[i] for i in range(kb.ndim(data[0]))]
+    for i in range(1, kb.ndim(sigma)):
+        tiling_shape[i] = 1
+    while kb.ndim(sigma) <= kb.ndim(data[0]):
+        sigma = kb.expand_dims(sigma, -1)
+    sigma = kb.tile(sigma, tiling_shape)
+    if disable_first:
+        for elem in data[:-1]:
+            data[-1] *= (1.0 - elem)
+    data = kb.stack(data, axis=0)
+    answer = kb.sum(data*sigma, axis=0)
     return answer
 
 ## routines for building layers
