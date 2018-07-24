@@ -1151,10 +1151,10 @@ class Inflector:
             curr_answer = decoder(curr_args + [0])
             for elem, to_append in zip(answer, curr_answer):
                 elem.append(to_append)
-        answer[0] = np.mean(answer[0], axis=0)
+        answer[0] = np.mean(answer[0], axis=0)[:,0]
         answer[1] = np.transpose(answer[1], axes=(1, 0, 2))
         answer[2] = np.transpose(answer[2], axes=(1, 0, 2))
-        return[elem[:,0] for elem in answer]
+        return answer
 
     def _predict_current_cell_output(self, *args):
         answer = [[], [], []]

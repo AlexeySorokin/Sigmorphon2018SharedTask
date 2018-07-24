@@ -74,22 +74,26 @@ if __name__ == "__main__":
         infile = os.path.join(test_dir, filename)
         corr_file = os.path.join(corr_dir, "{}-dev".format(language))
         results.append([language, mode] + list(evaluate_files(infile, corr_file, sep=sep)))
+    results.sort(key=lambda x: (x[0], MODES.index(x[1])))
     if outfile is not None:
-        results.sort(key = lambda x: (x[0], MODES.index(x[1])))
-        with open(outfile, "w", encoding="utf8") as fout:
-            for curr_results in results:
-                format_string, data = [], []
-                for i, elem in enumerate(curr_results):
-                    width = WIDTHS[i] if i < len(WIDTHS) else None
-                    format_string.append(get_format_string(elem, width=width))
-                    if isinstance(elem, list):
-                        data.append(" ".join(str(x) for x in elem))
-                    elif isinstance(elem, dict):
-                        data.append(" ".join("{}:{:.2f}".format(*x) for x in sorted(elem.items())))
-                    else:
-                        data.append(elem)
-                format_string = "\t".join(format_string) + "\n"
-                fout.write(format_string.format(*data))
-                if verbose:
-                    print(format_string.format(*data), end="")
+        fout = open(outfile, "w", encoding="utf8")
+    for curr_results in results:
+        format_string, data = [], []
+        for i, elem in enumerate(curr_results):
+            width = WIDTHS[i] if i < len(WIDTHS) else None
+            format_string.append(get_format_string(elem, width=width))
+            if isinstance(elem, list):
+                data.append(" ".join(str(x) for x in elem))
+            elif isinstance(elem, dict):
+                data.append(" ".join("{}:{:.2f}".format(*x) for x in sorted(elem.items())))
+            else:
+                data.append(elem)
+        format_string = "\t".join(format_string) + "\n"
+        if outfile is not None:
+            fout.write(format_string.format(*data))
+        if verbose:
+            print(format_string.format(*data), end="")
+    if outfile is not None:
+        fout.close()
+
 
