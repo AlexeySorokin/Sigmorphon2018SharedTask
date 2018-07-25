@@ -63,6 +63,7 @@ if __name__ == "__main__":
     results = []
     model_format_string = '{1}-{2}' if model_name is None else '{0}-{1}-{2}'
     for language, mode in languages:
+        print(language, mode)
         infile = os.path.join(corr_dir, "{}-train-{}".format(language, mode))
         test_file = os.path.join(corr_dir, "{}-dev".format(language))
         data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)

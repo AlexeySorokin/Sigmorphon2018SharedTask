@@ -470,8 +470,8 @@ class Inflector:
                 if x == END:
                     break
                 x = self.symbols_[x]
-                if x == UNKNOWN:
-                    possible_symbols = [UNKNOWN], []
+                if x == UNKNOWN or x not in self.symbol_statistics_:
+                    possible_symbols = [x], []
                 else:
                     possible_symbols = self.symbol_statistics_[x]
                 possible_symbols = [np.fromiter((self.symbol_codes_[y] for y in elem), dtype=int)
