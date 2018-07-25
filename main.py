@@ -26,7 +26,7 @@ SHORT_OPTS = "l:o:S:L:m:tTP:"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
-    config.gpu_options.per_process_gpu_memory_fraction = 0.4
+    config.gpu_options.per_process_gpu_memory_fraction = 0.3
     kbt.set_session(tf.Session(config=config))
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
     languages = None
