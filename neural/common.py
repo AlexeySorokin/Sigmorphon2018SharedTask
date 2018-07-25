@@ -93,7 +93,7 @@ def make_table(data, length, indexes, fill_value=None, fill_with_last=False):
 def generate_data(X, indexes_by_buckets, batches_indexes, batch_size,
                   symbols_number, auxiliary_symbols_number=None,
                   inputs_number=None, shuffle=True,
-                  weights=None, nepochs=None):
+                  weights=None, weight_indexes=None, nepochs=None):
     inputs_number = inputs_number or (len(X[0]) - 1)
     auxiliary_symbols_number = auxiliary_symbols_number or []
     nsteps = 0
@@ -120,6 +120,9 @@ def generate_data(X, indexes_by_buckets, batches_indexes, batch_size,
             if weights is None:
                 yield (to_yield, y_to_yield)
             else:
-                weights_to_yield = weights[i][curr_indexes]
+                if callable(weights):
+                    weights_to_yield = weights(*(curr_bucket[j][curr_indexes] for j in weight_indexes))
+                else:
+                    weights_to_yield = weights[i][curr_indexes]
                 yield (to_yield, y_to_yield, weights_to_yield)
         nsteps += 1

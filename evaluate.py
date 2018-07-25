@@ -48,7 +48,7 @@ SHORT_OPTS = "l:o:t:c:vs:m:"
 if __name__ == "__main__":
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
     languages, outfile, verbose, sep, model_name = None, None, False, " ", None
-    test_dir, corr_dir = "conll2018/task1/baseline-results", "conll2018/task1/all"
+    test_dir, corr_dir = "baseline-results", "conll2018/task1/all"
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)

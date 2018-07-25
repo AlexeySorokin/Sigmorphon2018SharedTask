@@ -2,7 +2,7 @@ import os
 import inspect
 import ujson as json
 from collections import defaultdict
-
+from functools import partial
 
 from neural.common import *
 from neural.common_neural import *
@@ -144,11 +144,13 @@ def make_auxiliary_target(alignment, mode):
         raise ValueError("Unknown function mode:", mode)
     return answer
 
+
 def make_auxiliary_targets(alignment, modes, reverse=False):
     answer = [make_auxiliary_target(alignment, mode) for mode in modes]
     if reverse:
         answer = [elem[::-1] for elem in answer]
     return answer
+
 
 def extend_history(histories, hyps, indexes, start=0, pos=None,
                    history_pos=0, value=None, func="append", **kwargs):
@@ -219,7 +221,7 @@ class Inflector:
     UNKNOWN_FEATURE = 0
 
     DEFAULT_ALIGNER_PARAMS = {"init_params": {"gap": 1, "initial_gap": 0}, "n_iter": 5,
-                              "init": "lcs", "separate_endings": True}
+                              "init": "lcs", "separate_endings": True, "verbose": 0}
     MAX_STEPS_NUMBER = 3
 
     def __init__(self, aligner_params=None, use_full_tags=False,
@@ -236,8 +238,7 @@ class Inflector:
                  rnn="lstm", encoder_rnn_layers=1, encoder_rnn_size=32,
                  attention_key_size=32, attention_value_size=32,
                  decoder_rnn_size=32, dense_output_size=32,
-                 use_decoder_gate="",
-                 features_after_decoder=False,
+                 use_decoder_gate="", features_after_decoder=False,
                  conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
                  history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
                  callbacks=None,
@@ -272,7 +273,7 @@ class Inflector:
         self.conv_layers = conv_layers
         self.conv_window = conv_window
         self.conv_filters = conv_filters
-        self.rnn = rnn
+        # self.rnn = rnn
         self.encoder_rnn_layers = encoder_rnn_layers
         self.encoder_rnn_size = encoder_rnn_size
         self.attention_key_size = attention_key_size
@@ -311,10 +312,10 @@ class Inflector:
             self.conv_window = [self.conv_window]
         if isinstance(self.conv_filters, int):
             self.conv_filters = [self.conv_filters]
-        if isinstance(self.rnn, str):
-            self.rnn = getattr(kl, self.rnn.upper())
-        if self.rnn not in [kl.GRU, kl.LSTM]:
-            raise ValueError("Unknown recurrent network: {}".format(self.rnn))
+        # if isinstance(self.rnn, str):
+        #     self.rnn = getattr(kl, self.rnn.upper())
+        # if self.rnn not in [kl.GRU, kl.LSTM]:
+        #     raise ValueError("Unknown recurrent network: {}".format(self.rnn))
         if self.auxiliary_targets_number:
             for attr in ["auxiliary_target_weights", "auxiliary_dense_units"]:
                 value = getattr(self, attr)
@@ -689,7 +690,7 @@ class Inflector:
             if model_file is not None:
                 curr_model_file = self._make_model_file(model_file, i+1)
                 save_callback = ModelCheckpoint(
-                    curr_model_file, save_weights_only=True, save_best_only=True)
+                    curr_model_file, save_weights_only=True, save_best_only=True, monitor="val_acc")
                 curr_callbacks = self.callbacks + [save_callback]
             else:
                 curr_callbacks = self.callbacks
@@ -918,8 +919,8 @@ class Inflector:
         else:
             outputs, metrics, weights = first_output, ["accuracy"], None
         model = Model(inputs, outputs)
-        model.compile(optimizer=adam(clipnorm=5.0), loss=loss,
-                      metrics=["accuracy"], loss_weights=weights)
+        model.compile(optimizer=adam(clipnorm=5.0), loss=loss, metrics=["accuracy"],
+                      loss_weights=weights, sample_weight_mode="temporal")
         to_encoder = ([symbol_inputs, feature_inputs] if self.encode_auxiliary_symbol_outputs
                       else [symbol_inputs])
         if self.use_symbol_statistics:

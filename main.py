@@ -22,7 +22,7 @@ def read_params(infile):
     return params
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-SHORT_OPTS = "l:o:S:L:m:tT"
+SHORT_OPTS = "l:o:S:L:m:tTP:"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -34,6 +34,7 @@ if __name__ == "__main__":
     save_dir, load_dir, model_name = None, None, None
     analysis_dir, pred_dir = "results", "predictions"
     to_train, to_test = True, True
+    predict_dir, to_predict = None, False
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
@@ -53,6 +54,8 @@ if __name__ == "__main__":
             to_train = False
         elif opt == "-T":
             to_test = False
+        elif opt == "-P":
+            predict_dir, to_predict = val, True
     if languages is None:
         languages = [elem.rsplit("-", maxsplit=2) for elem in os.listdir(corr_dir)]
         languages = [(elem[0], elem[2]) for elem in languages if elem[1] == "train" and len(elem) >= 3]
@@ -100,3 +103,14 @@ if __name__ == "__main__":
             analysis_file = os.path.join(analysis_dir, filename+"-analysis") if analysis_dir is not None else None
             output_analysis(test_data, answer, analysis_file,
                             answers_for_missed=answers_for_missed)
+        if to_predict:
+            predict_file = os.path.join(corr_dir, "{}-covered-test".format(language))
+            data = read_infile(predict_file, feat_column=1)
+            answer = inflector.predict(data, **params["predict"])
+            outfile = os.path.join(predict_dir, filename)
+            with open(outfile, "w", encoding="utf8") as fout:
+                for source, predictions in zip(test_data, answer):
+                    predicted_words = [elem[0] for elem in predictions]
+                    for word in predicted_words:
+                        fout.write("\t".join([source[0], word, ";".join(source[2])]) + "\n")
+
