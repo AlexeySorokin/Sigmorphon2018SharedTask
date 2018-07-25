@@ -17,14 +17,14 @@ def read_languages_infile(infile):
     return answer
 
 
-def read_infile(infile, for_lm=False):
+def read_infile(infile, for_lm=False, feat_column=2):
     answer = []
     with open(infile, "r", encoding="utf8") as fin:
         for line in fin:
             splitted = line.strip().split("\t")
-            if len(splitted) != 3:
+            if len(splitted) != feat_column+1:
                 continue
-            splitted[2] = splitted[2].split(";")
+            splitted[feat_column] = splitted[feat_column].split(";")
             answer.append(splitted[1:] if for_lm else splitted)
     return answer
 

@@ -970,8 +970,8 @@ class Inflector:
                   targets_by_buckets, encoded_words_by_buckets]
         return inputs, encoded_answers_by_buckets
 
-    def predict(self, data, known_answers=None, return_alignment_positions=False,
-                return_log=False, verbose=0, **kwargs):
+    def predict(self, data, feat_column=2, known_answers=None,
+                return_alignment_positions=False, return_log=False, verbose=0, **kwargs):
         """
 
         Parameters:
@@ -985,7 +985,7 @@ class Inflector:
         """
         if not getattr(self, "built_", "") == "test":
             self.rebuild_test()
-        words, features = [elem[0] for elem in data], [elem[2] for elem in data]
+        words, features = [elem[0] for elem in data], [elem[feat_column] for elem in data]
         output_lengths = [(2 * len(x) + self.max_length_shift_ + 3) for x in words]
         buckets_with_indexes = collect_buckets(output_lengths, max_bucket_length=64)
         inputs, encoded_answers_by_buckets =\
@@ -1267,7 +1267,7 @@ def predict_missed_answers(test_data, answers, inflector, **kwargs):
                if x[1] not in [elem[0] for elem in answers[i]]]
     data_with_missed_answers = [test_data[i] for i in indexes]
     known_answers = [elem[1] for elem in data_with_missed_answers]
-    scores = inflector.predict(data_with_missed_answers, known_answers, **kwargs)
+    scores = inflector.predict(data_with_missed_answers, known_answers=known_answers, **kwargs)
     answer = [(index, elem[0]) for index, elem in zip(indexes, scores)]
     return answer
 

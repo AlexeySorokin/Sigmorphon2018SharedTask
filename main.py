@@ -106,11 +106,11 @@ if __name__ == "__main__":
         if to_predict:
             predict_file = os.path.join(corr_dir, "{}-covered-test".format(language))
             data = read_infile(predict_file, feat_column=1)
-            answer = inflector.predict(data, **params["predict"])
-            outfile = os.path.join(predict_dir, filename)
+            answer = inflector.predict(data, feat_column=-1, **params["predict"])
+            outfile = os.path.join(predict_dir, filename+"-out")
             with open(outfile, "w", encoding="utf8") as fout:
-                for source, predictions in zip(test_data, answer):
+                for source, predictions in zip(data, answer):
                     predicted_words = [elem[0] for elem in predictions]
-                    for word in predicted_words:
-                        fout.write("\t".join([source[0], word, ";".join(source[2])]) + "\n")
+                    for word in predicted_words[:1]:
+                        fout.write("\t".join([source[0], word, ";".join(source[-1])]) + "\n")
 

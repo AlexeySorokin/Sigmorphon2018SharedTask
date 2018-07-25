@@ -5,7 +5,7 @@ from time import time
 
 import numpy as np
 
-from pyparadigm.pyparadigm import LcsSearcher, fill_vars
+from pyparadigm.paradigm import LcsSearcher, fill_vars
 from aligner._aligner import CythonAlignerImpl
 
 MAX_DIFF = 50
