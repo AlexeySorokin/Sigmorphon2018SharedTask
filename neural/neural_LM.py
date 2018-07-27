@@ -355,7 +355,7 @@ class NeuralLM:
         return self
 
     def _build_symbol_layer(self, symbol_inputs):
-        useful_symbols_mask = make_useful_symbols_mask(symbol_inputs, dtype="float32")
+        # useful_symbols_mask = make_useful_symbols_mask(symbol_inputs, dtype="float32")
         if self.use_embeddings:
             answer = kl.Embedding(self.symbols_number_, self.embeddings_size)(symbol_inputs)
             if self.embeddings_dropout > 0.0:
@@ -363,7 +363,7 @@ class NeuralLM:
         else:
             answer = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number_},
                                output_shape=(None, self.symbols_number_))(symbol_inputs)
-        answer = kl.Lambda(lambda x, y: x*y[...,None], arguments={"y": useful_symbols_mask})(answer)
+        # answer = kl.Lambda(lambda x, y: x*y[...,None], arguments={"y": useful_symbols_mask})(answer)
         return answer
 
     def _build_history(self, inputs, only_last=False):
@@ -408,9 +408,9 @@ class NeuralLM:
             kl.Dense(self.symbols_number_, activation="softmax"))(pre_outputs)
         return outputs, initial_states, [final_c_states, final_h_states], lstm_outputs
 
-    def rebuild_test(self):
+    def rebuild(self, test=True):
         weights = self.model_.get_weights()
-        self.build(test=True)
+        self.build(test=test)
         self.model_.set_weights(weights)
         return self
 

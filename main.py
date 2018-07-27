@@ -2,6 +2,7 @@ import sys
 import getopt
 import os
 import ujson as json
+import numpy as np
 
 import tensorflow as tf
 import keras.backend.tensorflow_backend as kbt
@@ -37,7 +38,7 @@ if __name__ == "__main__":
     analysis_dir, pred_dir = "results", "predictions"
     to_train, to_test = True, True
     predict_dir, to_predict = None, False
-    use_paradigms = False
+    use_paradigms, use_lm = False, False
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
@@ -119,10 +120,32 @@ if __name__ == "__main__":
                     for source, predictions in zip(test_data, answer):
                         predicted_words = [elem[0] for elem in predictions]
                         fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
-            answers_for_missed = predict_missed_answers(test_data, answer, inflector, **params["predict"])
-            analysis_file = os.path.join(analysis_dir, filename+"-analysis") if analysis_dir is not None else None
-            output_analysis(test_data, answer, analysis_file,
-                            answers_for_missed=answers_for_missed)
+            if inflector.use_lm:
+                inflector.lm_.rebuild(test=False)
+                lm_group_lengths = np.cumsum([len(predictions) for predictions in answer])
+                data_for_lm_scores = []
+                for source, predictions in zip(test_data, answer):
+                    data_for_lm_scores.extend([(elem[0], source[2]) for elem in predictions])
+                lm_scores = inflector.lm_.predict(data_for_lm_scores, return_letter_scores=True,
+                                                  return_log_probs=False)
+                lm_scores_by_groups = [lm_scores[start:lm_group_lengths[i+1]]
+                                       for i, start in enumerate(lm_group_lengths[:-1])]
+                with open("dump.out", "w", encoding="utf8") as fout:
+                    for source, predictions, curr_lm_scores in\
+                            zip(test_data, answer, lm_scores_by_groups):
+                        predicted_words = [elem[0] for elem in predictions]
+                        for elem, (letter_scores, word_score) in zip(predictions, curr_lm_scores):
+                            fout.write("\t".join([source[0], ";".join(source[2]), elem[0],
+                                                  "-".join("{:.2f}".format(100*x) for x in elem[1])]) + "\n")
+                            word = ['BOW'] + list(source[0]) + ['EOW']
+                            fout.write(" ".join("{}-{:.2f}".format(x, 100*y)
+                                                for x, y in zip(elem[0], letter_scores)) + "\t")
+                            fout.write("{:.2f}\n".format(word_score))
+
+            # answers_for_missed = predict_missed_answers(test_data, answer, inflector, **params["predict"])
+            # analysis_file = os.path.join(analysis_dir, filename+"-analysis") if analysis_dir is not None else None
+            # output_analysis(test_data, answer, analysis_file,
+            #                 answers_for_missed=answers_for_missed)
         if to_predict:
             predict_file = os.path.join(corr_dir, "{}-covered-test".format(language))
             data = read_infile(predict_file, feat_column=1)
