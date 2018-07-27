@@ -209,6 +209,9 @@ def load_inflector(infile):
     args = {key: value for key, value in json_data.items() if key[-1] == "_"}
     for key, value in args.items():
         setattr(inflector, key, value)
+    if inflector.use_lm and not hasattr(inflector, "recodings_for_lm_"):
+        inflector.recodings_for_lm_ =\
+            {i: inflector.lm_.toidx(x) for i, x in enumerate(inflector.symbols_)}
     # модель
     inflector.build()  # не работает сохранение модели, приходится сохранять только веса
     for i, (model, model_file) in enumerate(
@@ -417,6 +420,14 @@ class Inflector:
     @property
     def lm_states_number(self):
         return 2 + 2 * int(self.lm_.has_attention)
+
+    @property
+    def lm_encoder_dim(self):
+        return self.lm_.encoder_rnn_size
+
+    @property
+    def lm_decoder_dim(self):
+        return self.lm_.decoder_rnn_size
 
     def _make_vocabulary(self, X):
         symbols = {a for first, second, _ in X for a in first+second}
@@ -676,7 +687,8 @@ class Inflector:
         """
         self._make_vocabulary(data)
         self._make_features([elem[2] for elem in data])
-
+        if self.use_lm:
+            self.recodings_for_lm_ = {i: self.lm_.toidx(x) for i, x in enumerate(self.symbols_)}
         data_by_buckets, buckets_indexes = self._preprocess(
             data, alignments, to_fit=True, alignments_outfile=alignments_outfile)
         if dev_data is not None:
@@ -990,6 +1002,8 @@ class Inflector:
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
+        raw_features_by_buckets =\
+            [[features[i] for i in indexes] for _, indexes in buckets_with_indexes]
         encoder_args = [encoded_words_by_buckets, features_by_buckets]
         if self.use_symbol_statistics:
             symbol_stats_by_buckets = [self._extract_symbol_data(elem)
@@ -997,10 +1011,6 @@ class Inflector:
             encoder_args.append(symbol_stats_by_buckets)
         encoder_outputs_by_buckets = self._predict_encoder_outputs(*encoder_args)
 
-        # targets_by_buckets = [np.zeros(shape=(len(indexes), self.output_history))
-        #                       for L, indexes in buckets_with_indexes]
-        # for elem in targets_by_buckets:
-        #     elem[:] = BEGIN
         targets_by_buckets = [self._make_shifted_output(L, len(indexes))
                               for (L, indexes) in buckets_with_indexes]
         if known_answers is not None:
@@ -1013,7 +1023,7 @@ class Inflector:
         else:
             encoded_answers_by_buckets = [None] * len(buckets_with_indexes)
         inputs = [encoder_outputs_by_buckets, features_by_buckets,
-                  targets_by_buckets, encoded_words_by_buckets]
+                  targets_by_buckets, encoded_words_by_buckets, raw_features_by_buckets]
         return inputs, encoded_answers_by_buckets
 
     def predict(self, data, feat_column=2, known_answers=None,
@@ -1072,7 +1082,7 @@ class Inflector:
 
 
     def _predict_on_batch(self, symbols, features, target_history, source,
-                          steps_history=None, beam_width=1, beam_growth=None,
+                          source_features, beam_width=1, beam_growth=None,
                           prune_start=0, known_answers=None):
         """
 
@@ -1090,8 +1100,8 @@ class Inflector:
         M = m * beam_width
         # positions[j] --- текущая позиция в symbols[j]
         positions = np.zeros(shape=(M,), dtype=int)
+        positions_in_answers = np.zeros(shape=(M,), dtype=int)
         if known_answers is not None:
-            positions_in_answers = np.zeros(shape=(M,), dtype=int)
             current_steps_number = np.zeros(shape=(M,), dtype=int)
             known_answers = np.repeat(known_answers, beam_width, axis=0)
             allowed_steps_number = L - np.count_nonzero(known_answers, axis=1) - 1
@@ -1107,11 +1117,15 @@ class Inflector:
         # размножаем признаки и shifted_targets
         features = np.repeat(features, beam_width, axis=0)
         target_history = np.repeat(target_history, beam_width, axis=0)
-        if steps_history is not None:
-            steps_history = np.repeat(steps_history, beam_width, axis=0)
         source = np.repeat(source, beam_width, axis=0)
         h_states = np.zeros(shape=(M, self.models_number, self.decoder_rnn_size), dtype="float32")
         c_states = np.zeros(shape=(M, self.models_number, self.decoder_rnn_size), dtype="float32")
+        if self.use_lm:
+            lm_states = np.zeros(shape=(M, self.lm_decoder_dim), dtype="float32")
+            # lm_encoder_states = np.zeros(shape=(2, M, self.lm_encoder_dim), dtype="float32")
+            lm_decoder_states = np.zeros(shape=(2, M, self.lm_decoder_dim), dtype="float32")
+            encoded_features = [self.lm_._make_feature_vector(x) for x in source_features]
+            encoded_features = np.repeat(encoded_features, beam_width, axis=0)
         for i in range(L):
             # текущие символы
             curr_symbols = symbols[:, np.arange(M) // beam_width, positions,:][:, is_active]
@@ -1119,6 +1133,8 @@ class Inflector:
             args = [curr_symbols[:, :, None], features[is_active],
                     target_history[is_active,max(i-self.output_history,0):i+1],
                     active_source[:, None]]
+            if self.use_lm:
+                args.append(lm_states[is_active,None])
             args += [h_states[is_active, :], c_states[is_active, :]]
             curr_outputs, new_h_states, new_c_states = self._predict_current_output(*args)
             # active_source = source[np.arange(M), positions][is_active]
@@ -1173,6 +1189,7 @@ class Inflector:
                         hypotheses_by_groups[group_index].append(hyp)
                     hypotheses_by_groups[group_index] =\
                         sorted(hypotheses_by_groups[group_index], key=lambda x:x[2])[:beam_growth]
+            symbol_outputs_indexes = []
             for j, (curr_hypotheses, group_beam_width) in\
                     enumerate(zip(hypotheses_by_groups, group_beam_widths)):
                 if group_beam_width == 0:
@@ -1189,9 +1206,13 @@ class Inflector:
                 extend_history(partial_scores, curr_hypotheses, free_indexes, pos=2, func="change")
                 extend_history(positions, curr_hypotheses, free_indexes, pos=1,
                                func=(lambda x, y: x+int(y == STEP_CODE)))
+                extend_history(positions_in_answers, curr_hypotheses, free_indexes,
+                               pos=1, func=(lambda x, y: x + int(y != STEP_CODE)))
+                if self.use_lm:
+                    for r, hyp in zip(free_indexes, curr_hypotheses):
+                        if hyp[1] != STEP_CODE:
+                            symbol_outputs_indexes.append((hyp[0], r))
                 if known_answers is not None:
-                    extend_history(positions_in_answers, curr_hypotheses, free_indexes,
-                                   pos=1, func=(lambda x, y: x+int(y != STEP_CODE)))
                     extend_history(current_steps_number, curr_hypotheses, free_indexes,
                                    pos=1, func=(lambda x, y: (0 if y != STEP_CODE else x+1)))
                 extend_history(h_states, curr_hypotheses, free_indexes, pos=4, func="change")
@@ -1204,6 +1225,24 @@ class Inflector:
                         break
                     is_active[index] = (curr_hypotheses[r][1] != END)
                     is_completed[index] = not(is_active[index])
+            # нужно пересчитать состояния языковой модели
+            if self.use_lm and len(symbol_outputs_indexes) > 0:
+                old_decoder_states, lm_histories, curr_features = [], [], []
+                for old_index, index in symbol_outputs_indexes:
+                    old_decoder_states.append(lm_decoder_states[:,old_index])
+                    word = words[index][-self.lm_.history:]
+                    encoded_word = [self.recodings_for_lm_[x] for x in word]
+                    encoded_word = [0] * (self.lm_.history - len(encoded_word)) + encoded_word
+                    lm_histories.append(encoded_word)
+                    curr_features.append(encoded_features[old_index])
+                old_decoder_states = np.array(old_decoder_states)
+                to_step = [np.array(lm_histories), np.array(curr_features),
+                           old_decoder_states[:,0], old_decoder_states[:,1]]
+                from_step = self.lm_._step_func_(to_step + [0])
+                for j, (state, c_state, h_state) in enumerate(zip(*from_step)):
+                    _, new_index = symbol_outputs_indexes[j]
+                    lm_states[new_index] = state
+                    lm_decoder_states[:,new_index] = [c_state, h_state]
             if not any(is_active):
                 break
         # здесь нужно переделать words, probs в список

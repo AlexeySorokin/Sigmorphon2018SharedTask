@@ -25,6 +25,7 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
 from .common import *
 from .common import generate_data
+from .common_neural import make_useful_symbols_mask
 from .vocabulary import Vocabulary, vocabulary_from_json
 from .cells import History, AttentionCell, attention_func
 
@@ -218,6 +219,9 @@ class NeuralLM:
         else:
             return 0
 
+    def toidx(self, x):
+        return self.vocabulary_.toidx(x)
+
     def _make_word_vector(self, word, bucket_length=None, symbols_has_features=False):
         """
         :param word:
@@ -345,12 +349,13 @@ class NeuralLM:
             print(self.model_.summary())
         step_func_inputs = inputs + initial_decoder_states + initial_encoder_states
         step_func_outputs = [lstm_outputs] + final_decoder_states + final_encoder_states
-        self._step_func_ = kb.Function(step_func_inputs, step_func_outputs)
-        self._state_func_ = kb.Function(inputs, [lstm_outputs])
+        self._step_func_ = kb.Function(step_func_inputs + [kb.learning_phase()], step_func_outputs)
+        self._state_func_ = kb.Function(inputs + [kb.learning_phase()], [lstm_outputs])
         self.built_ = "test" if test else "train"
         return self
 
     def _build_symbol_layer(self, symbol_inputs):
+        useful_symbols_mask = make_useful_symbols_mask(symbol_inputs, dtype="float32")
         if self.use_embeddings:
             answer = kl.Embedding(self.symbols_number_, self.embeddings_size)(symbol_inputs)
             if self.embeddings_dropout > 0.0:
@@ -358,6 +363,7 @@ class NeuralLM:
         else:
             answer = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number_},
                                output_shape=(None, self.symbols_number_))(symbol_inputs)
+        answer = kl.Lambda(lambda x, y: x*y[...,None], arguments={"y": useful_symbols_mask})(answer)
         return answer
 
     def _build_history(self, inputs, only_last=False):
@@ -367,6 +373,7 @@ class NeuralLM:
         initial_states = [kb.zeros_like(inputs[:, 0, 0]), kb.zeros_like(inputs[:, 0, 0])]
         for i, elem in enumerate(initial_states):
             initial_states[i] = kb.tile(elem[:, None], [1, self.encoder_rnn_size])
+        # TO DO: будут проблемы с историей при наличии attention
         encoder = kl.LSTM(self.encoder_rnn_size, return_sequences=True, return_state=True)
         lstm_outputs, final_c_states, final_h_states = encoder(inputs, initial_state=initial_states)
         attention_params = {"left": self.history, "input_dim": self.encoder_rnn_size,

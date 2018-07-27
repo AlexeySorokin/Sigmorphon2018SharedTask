@@ -75,7 +75,7 @@ if __name__ == "__main__":
         data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
         data *= params.get("data_multiple", 1)
         dev_data = test_data[:]
-        # test_data = test_data[:20]
+        test_data = test_data[:20]
         # data_for_alignment = [elem[:2] for elem in data]
         # aligner = Aligner(n_iter=1, separate_endings=True, init="lcs",
         #                   init_params={"gap": 2, "initial_gap": 3})
