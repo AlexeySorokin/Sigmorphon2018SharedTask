@@ -4,6 +4,8 @@ from itertools import chain
 import numpy as np
 import keras.backend as kb
 
+
+EPS = 1e-10
 BOW, EOW, STEP, COPY = "BEGIN", "END", "STEP", "COPY"
 PAD, BEGIN, END, UNKNOWN, STEP_CODE, COPY_CODE = 0, 1, 2, 3, 4, 5
 AUXILIARY = ['PAD', BOW, EOW, 'UNKNOWN']

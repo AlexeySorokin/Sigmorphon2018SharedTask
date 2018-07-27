@@ -141,7 +141,7 @@ class AttentionCell(Layer):
 
 def attention_func(inputs, only_last=False, **kwargs):
     answer = AttentionCell(**kwargs)(inputs)
-    if only_last:
+    if not only_last:
         return answer
     return kl.Lambda(lambda x: x[:,-1:])(answer)
 

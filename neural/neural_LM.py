@@ -21,7 +21,7 @@ import keras.backend as kb
 import keras.layers as kl
 from keras.models import Model
 import keras.callbacks as kcall
-from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
 from .common import *
 from .common import generate_data
@@ -121,7 +121,7 @@ class NeuralLM:
         self.embeddings_size = embeddings_size
         self.feature_embedding_layers = feature_embedding_layers
         self.feature_embeddings_size = feature_embeddings_size
-        self.rnn = rnn
+        # self.rnn = rnn
         self.encoder_rnn_size = encoder_rnn_size
         self.decoder_rnn_size = decoder_rnn_size
         self.dense_output_size = dense_output_size
@@ -136,10 +136,10 @@ class NeuralLM:
         self.initialize(callbacks)
 
     def initialize(self, callbacks=None):
-        if isinstance(self.rnn, str):
-            self.rnn = getattr(kl, self.rnn.upper())
-        if self.rnn not in [kl.GRU, kl.LSTM]:
-            raise ValueError("Unknown recurrent network: {}".format(self.rnn))
+        # if isinstance(self.rnn, str):
+        #     self.rnn = getattr(kl, self.rnn.upper())
+        # if self.rnn not in [kl.GRU, kl.LSTM]:
+        #     raise ValueError("Unknown recurrent network: {}".format(self.rnn))
         callbacks = callbacks or dict()
         self.callbacks = [getattr(kcall, key)(**params) for key, params in callbacks.items()]
 
@@ -150,7 +150,8 @@ class NeuralLM:
             if not (attr.startswith("__") or inspect.ismethod(val) or
                     isinstance(getattr(NeuralLM, attr, None), property) or
                     isinstance(val, Vocabulary) or attr.isupper() or
-                    attr in ["callbacks", "model_", "step_func_"]):
+                    attr in ["callbacks", "model_", "_step_func_", "hidden_state_func_",
+                             "tag_codes_"]):
                 info[attr] = val
             elif isinstance(val, Vocabulary):
                 info[attr] = val.jsonize()
@@ -280,6 +281,8 @@ class NeuralLM:
         buckets_with_indexes = collect_buckets(lengths, buckets_number=buckets_number,
                                                max_bucket_length=max_bucket_length)
         data = [elem[0] for elem in X]
+        if self.reverse:
+            data = [elem[::-1] for elem in data]
         data_by_buckets = [[self._make_bucket_data(data, length, indexes)]
                            for length, indexes in buckets_with_indexes]
         if self.use_label:
@@ -308,7 +311,13 @@ class NeuralLM:
         else:
             X_dev, dev_indexes_by_buckets = None, None
         self.build()
-        if save_file is not None and model_file is not None:
+        if save_file is not None:
+            if model_file is None:
+                pos = save_file.rfind(".")
+                if pos == -1:
+                    model_file = save_file + ".hdf5"
+                else:
+                    model_file = save_file[:pos] + ".hdf5"
             self.to_json(save_file, model_file)
         self.train_model(X_train, X_dev, model_file=model_file)
         return self
@@ -335,7 +344,7 @@ class NeuralLM:
             print(self.model_.summary())
         step_func_inputs = inputs + initial_decoder_states + initial_encoder_states
         step_func_outputs = [outputs] + final_decoder_states + final_encoder_states
-        self._step_func = kb.Function(step_func_inputs, step_func_outputs)
+        self._step_func_ = kb.Function(step_func_inputs, step_func_outputs)
         return self
 
     def _build_symbol_layer(self, symbol_inputs):
@@ -425,7 +434,7 @@ class NeuralLM:
                                 self.batch_size, self.symbols_number_, shuffle=False)
         self.model_.fit_generator(
             train_gen, len(train_batches_indexes), epochs=self.nepochs,
-            callbacks=self.callbacks, verbose=1, validation_data=val_gen,
+            callbacks=self.callbacks, verbose=self.verbose, validation_data=val_gen,
             validation_steps=len(dev_batches_indexes))
         if model_file is not None:
             self.model_.load_weights(model_file)
@@ -439,12 +448,11 @@ class NeuralLM:
             features(optional): shape=(batch_size, self.feature_vector_size)
         :return:
         """
-        # elem[0] because elem = [word, (pos, (feats))]
         bucket_size, length = bucket[0].shape[:2]
-        padding = np.full(answer[:,:1].shape, PAD, answer.dtype)
-        shifted_data = np.hstack((answer[:,1:], padding))
+        # padding = np.full(answer[:,:1].shape, PAD, answer.dtype)
+        # shifted_data = np.hstack((answer[:,1:], padding))
         # evaluate принимает только данные того же формата, что и выход модели
-        answers = to_one_hot(shifted_data, self.output_symbols_number)
+        answers = to_one_hot(answer, self.symbols_number_)
         # total = self.model.evaluate(bucket, answers, batch_size=batch_size)
         # last two scores are probabilities of word end and final padding symbol
         scores = self.model_.predict(bucket, batch_size=batch_size)
@@ -454,7 +462,7 @@ class NeuralLM:
         losses = -np.sum(answers * np.log(scores), axis=-1)
         total = np.sum(losses, axis=1) # / np.log(2.0)
         letter_scores = scores[np.arange(bucket_size)[:,np.newaxis],
-                               np.arange(length)[np.newaxis,:], shifted_data]
+                               np.arange(length)[np.newaxis,:], answer]
         letter_scores = [elem[:length] for elem, length in zip(letter_scores, lengths)]
         return letter_scores, total
 
@@ -478,15 +486,11 @@ class NeuralLM:
         а также вероятности отдельных символов
         """
         fields_number = 2 if self.labels_ is not None else 1
-        answer_index = -1 if self.symbols_has_features else 0
-        X_test, indexes = self.transform(X, bucket_size=batch_size, join_buckets=False)
+        X_test, indexes = self.transform(X, max_bucket_length=batch_size)
         answer = [None] * len(X)
         lengths = np.array([len(x[0]) + 1 for x in X])
-        for j, curr_indexes in enumerate(indexes, 1):
-            # print("Lm bucket {} scoring".format(j))
-            curr_indexes.sort()
-            X_curr = [np.array([X_test[j][k] for j in curr_indexes]) for k in range(fields_number)]
-            y_curr = np.array([X_test[j][answer_index] for j in curr_indexes])
+        for j, curr_indexes in enumerate(indexes):
+            X_curr, y_curr = X_test[j][:fields_number], X_test[j][-1]
             letter_scores, total_scores = self._score_batch(
                 X_curr, y_curr, lengths[curr_indexes], batch_size=batch_size)
             if return_log_probs:
@@ -500,78 +504,41 @@ class NeuralLM:
 
     def predict_proba(self, X, batch_size=256):
         fields_number = 2 if self.labels_ is not None else 1
-        X_test, indexes = self.transform(X, pad=False, return_indexes=True)
+        X_test, indexes = self.transform(X, max_bucket_length=batch_size, return_indexes=True)
         answer = [None] * len(X)
-        start_probs = np.zeros(shape=(1, self.output_symbols_number), dtype=float)
+        start_probs = np.zeros(shape=(1, self.symbols_number_), dtype=float)
         start_probs[0, BEGIN] = 1.0
-        for curr_indexes in indexes:
-            X_curr = [np.array([X_test[j][k] for j in curr_indexes]) for k in range(fields_number)]
+        for j, curr_indexes in enumerate(indexes):
+            X_curr = X_test[j][:fields_number]
             curr_probs = self.model_.predict(X_curr, batch_size=batch_size)
             for i, probs in zip(curr_indexes, curr_probs):
                 answer[i] = np.vstack((start_probs, probs[:len(X[i][0])+1]))
         return answer
-
-    def predict_attention(self, X, batch_size=32):
-        fields_number = 2 if self.labels_ is not None else 1
-        X_test, indexes = self.transform(X, pad=False, return_indexes=True)
-        answer = [None] * len(X)
-        for curr_indexes in indexes:
-            X_curr = [np.array([X_test[j][k] for j in curr_indexes]) for k in range(fields_number)]
-            # нужно добавить фазу обучения (используется dropout)
-            curr_attention = self._attention_func_(X_curr + [0])
-            for i, elem in zip(curr_indexes, curr_attention[0]):
-                answer[i] = elem
-        return answer
-
-    def perplexity(self, X, bucket_size=None, log2=False):
-        X_test, indexes = self.transform(X, bucket_size=bucket_size, join_buckets=False)
-        use_last = not(self.symbols_has_features)
-        eval_gen = generate_data(X_test, indexes, self.output_symbols_number,
-                                 use_last=use_last, shift_answer=True, shuffle=False)
-        loss = self.model_.evaluate_generator(eval_gen, len(indexes))
-        if log2:
-            loss /= np.log(2.0)
-        return loss
-
-    def get_embeddings_weights(self):
-        if not self.use_embeddings:
-            return None
-        try:
-            if self.symbols_has_features:
-                layer = self.model_.get_layer("distributed_embeddings").layer
-            else:
-                layer = self.model_.get_layer("layer_embeddings")
-        except ValueError:
-            return None
-        weights = layer.get_weights()
-        return weights[0]
 
 
 def load_lm(infile):
     with open(infile, "r", encoding="utf8") as fin:
         json_data = json.load(fin)
     args = {key: value for key, value in json_data.items()
-            if not (key.endswith("_") or key.endswith("callback") or key.endswith("dump_file"))}
-    callbacks = []
-    early_stopping_callback_data = json_data.get("early_stopping_callback")
-    if early_stopping_callback_data is not None:
-        callbacks.append(EarlyStopping(**early_stopping_callback_data))
-    # reduce_LR_callback_data = json_data.get("reduce_LR_callback")
-    # if reduce_LR_callback_data is not None:
-    #     callbacks.append(ReduceLROnPlateau(**reduce_LR_callback_data))
-    model_checkpoint_callback_data = json_data.get("model_checkpoint_callback")
-    if model_checkpoint_callback_data is not None:
-        callbacks.append(ModelCheckpoint(**model_checkpoint_callback_data))
-    args['callbacks'] = callbacks
+            if not (key.endswith("_") or key == "callbacks" or key.endswith("dump_file"))}
+    # коллбэки
+    args['callbacks'] = []
+    for key, cls in zip(["early_stopping_callback", "reduce_LR_callback"],
+                        [EarlyStopping, ReduceLROnPlateau]):
+        if key in json_data:
+            args['callbacks'].append(cls(**json_data[key]))
     # создаём языковую модель
     lm = NeuralLM(**args)
     # обучаемые параметры
     args = {key: value for key, value in json_data.items() if key[-1] == "_"}
     for key, value in args.items():
         if key == "vocabulary_":
-            setattr(lm, key, vocabulary_from_json(value, lm.symbols_has_features))
+            setattr(lm, key, vocabulary_from_json(value))
         else:
             setattr(lm, key, value)
+    if hasattr(lm, "tags_"):
+        lm.tags_ = [tuple(x) for x in lm.tags_]
+        lm.tag_codes_ = {tag: i for i, tag in enumerate(lm.tags_)}
     # модель
     lm.build()  # не работает сохранение модели, приходится сохранять только веса
     lm.model_.load_weights(json_data['dump_file'])
