@@ -336,15 +336,18 @@ class NeuralLM:
         else:
             inputs, to_decoder = [symbol_inputs], memory
         # lstm_outputs = kl.LSTM(self.rnn_size, return_sequences=True, dropout=self.dropout)(to_decoder)
-        outputs, initial_decoder_states, final_decoder_states = self._build_output_network(to_decoder)
+        outputs, initial_decoder_states,\
+            final_decoder_states, lstm_outputs = self._build_output_network(to_decoder)
         compile_args = {"optimizer": ko.nadam(clipnorm=5.0), "loss": "categorical_crossentropy"}
         self.model_ = Model(inputs, outputs)
         self.model_.compile(**compile_args)
         if self.verbose > 0:
             print(self.model_.summary())
         step_func_inputs = inputs + initial_decoder_states + initial_encoder_states
-        step_func_outputs = [outputs] + final_decoder_states + final_encoder_states
+        step_func_outputs = [lstm_outputs] + final_decoder_states + final_encoder_states
         self._step_func_ = kb.Function(step_func_inputs, step_func_outputs)
+        self._state_func_ = kb.Function(inputs, [lstm_outputs])
+        self.built_ = "test" if test else "train"
         return self
 
     def _build_symbol_layer(self, symbol_inputs):
@@ -396,7 +399,13 @@ class NeuralLM:
         pre_outputs = kl.Dense(self.dense_output_size, activation="relu")(lstm_outputs)
         outputs = kl.TimeDistributed(
             kl.Dense(self.symbols_number_, activation="softmax"))(pre_outputs)
-        return outputs, initial_states, [final_c_states, final_h_states]
+        return outputs, initial_states, [final_c_states, final_h_states], lstm_outputs
+
+    def rebuild_test(self):
+        weights = self.model_.get_weights()
+        self.build(test=True)
+        self.model_.set_weights(weights)
+        return self
 
     def train_model(self, X, X_dev=None, model_file=None):
         train_indexes_by_buckets, dev_indexes_by_buckets = [], []
@@ -440,7 +449,7 @@ class NeuralLM:
             self.model_.load_weights(model_file)
         return self
 
-    def _score_batch(self, bucket, answer, lengths, batch_size=1):
+    def _score_batch(self, bucket, answer, lengths, batch_size=1, return_array=False):
         """
         :Arguments
          batch: list of np.arrays, [data, (features)]
@@ -463,7 +472,8 @@ class NeuralLM:
         total = np.sum(losses, axis=1) # / np.log(2.0)
         letter_scores = scores[np.arange(bucket_size)[:,np.newaxis],
                                np.arange(length)[np.newaxis,:], answer]
-        letter_scores = [elem[:length] for elem, length in zip(letter_scores, lengths)]
+        if not return_array:
+            letter_scores = [elem[:length] for elem, length in zip(letter_scores, lengths)]
         return letter_scores, total
 
     def score(self, x, **args):
@@ -501,6 +511,12 @@ class NeuralLM:
             for i, letter_score, total_score in zip(curr_indexes, letter_scores, total_scores):
                 answer[i] = (letter_score, total_score) if return_letter_scores else total_score
         return answer
+
+    def predict_states_batch(self, X):
+        fields_number = 2 if self.labels_ is not None else 1
+        X_test, indexes = self.transform(X, buckets_number=1, max_bucket_length=len(X))
+        states = self._state_func_(X_test[0][:fields_number])[0]
+        return states
 
     def predict_proba(self, X, batch_size=256):
         fields_number = 2 if self.labels_ is not None else 1

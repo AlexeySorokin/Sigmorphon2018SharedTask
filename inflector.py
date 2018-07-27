@@ -7,6 +7,7 @@ from functools import partial
 from neural.common import *
 from neural.common_neural import *
 from neural.cells import MultiConv1D, TemporalDropout, History, LocalAttention
+from neural.neural_LM import load_lm
 from aligner.mcmc_aligner import Aligner, output_alignment
 
 import keras.backend as kb
@@ -227,6 +228,7 @@ class Inflector:
     def __init__(self, aligner_params=None, use_full_tags=False,
                  models_number=1, buckets_number=10, batch_size=32,
                  nepochs=25, validation_split=0.2, reverse=False,
+                 use_lm=False, lm_file=None,
                  use_input_attention=False, input_window=5,
                  output_history=1, use_output_embeddings=False, output_embeddings_size=16,
                  # separate_symbol_history=False, step_history=1,
@@ -240,12 +242,13 @@ class Inflector:
                  decoder_rnn_size=32, dense_output_size=32,
                  use_decoder_gate="", features_after_decoder=False,
                  conv_dropout=0.0, encoder_rnn_dropout=0.0, dropout=0.0,
-                 history_dropout=0.0, decoder_dropout=0.0, regularizer=0.0,
+                 history_dropout=0.0, decoder_dropout=0.0, lm_dropout=0.0,
+                 regularizer=0.0,
                  callbacks=None,
                  step_loss_weight=0.0, auxiliary_targets=None,
                  auxiliary_target_weights=None, auxiliary_dense_units=None,
                  encode_auxiliary_symbol_outputs=False,
-                 use_lm=False, min_prob=0.01, max_diff=2.0,
+                 min_prob=0.01, max_diff=2.0,
                  random_state=187, verbose=1):
         self.use_full_tags = use_full_tags
         self.models_number = models_number
@@ -254,6 +257,8 @@ class Inflector:
         self.nepochs = nepochs
         self.validation_split = validation_split
         self.reverse = reverse
+        self.use_lm = use_lm
+        self.lm_file = lm_file
         self.use_input_attention = use_input_attention
         self.input_window = input_window
         # self.input_right_context = input_right_context
@@ -288,6 +293,7 @@ class Inflector:
         self.dropout = dropout
         self.history_dropout = history_dropout
         self.decoder_dropout = decoder_dropout
+        self.lm_dropout = lm_dropout
         self.regularizer = regularizer
 
         self.step_loss_weight = step_loss_weight
@@ -296,7 +302,6 @@ class Inflector:
         self.auxiliary_dense_units = auxiliary_dense_units
         self.encode_auxiliary_symbol_outputs = encode_auxiliary_symbol_outputs
         # # декодинг
-        self.use_lm = use_lm
         self.min_prob = min_prob
         self.max_diff = max_diff
         # разное
@@ -308,6 +313,8 @@ class Inflector:
         # self._initialize_callbacks(model_file)
 
     def _initialize(self, callbacks=None):
+        if self.lm_file is not None:
+            self.lm_ = load_lm(self.lm_file)
         if isinstance(self.conv_window, int):
             self.conv_window = [self.conv_window]
         if isinstance(self.conv_filters, int):
@@ -356,7 +363,8 @@ class Inflector:
         for (attr, val) in inspect.getmembers(self):
             if not (attr.startswith("__") or inspect.ismethod(val) or
                     isinstance(getattr(Inflector, attr, None), property) or
-                    attr.isupper() or attr in ["callbacks", "models_", "aligner", "encoders_", "decoders_"]):
+                    attr.isupper() or attr in ["callbacks", "models_", "aligner",
+                                               "encoders_", "decoders_", "lm_"]):
                 info[attr] = val
             elif attr == "models_":
                 info["model_files"] = model_files
@@ -400,11 +408,15 @@ class Inflector:
 
     @property
     def inputs_number(self):
-        return 4 + int(self.use_symbol_statistics)
+        return 4 + int(self.use_symbol_statistics) + int(self.use_lm)
 
     @property
     def auxiliary_targets_number(self):
         return len(self.auxiliary_targets)
+
+    @property
+    def lm_states_number(self):
+        return 2 + 2 * int(self.lm_.has_attention)
 
     def _make_vocabulary(self, X):
         symbols = {a for first, second, _ in X for a in first+second}
@@ -539,8 +551,18 @@ class Inflector:
             targets_with_copy.append(curr_answer)
         return targets_with_copy
 
+    def _make_lm_data(self, data, indexes):
+        lm_states = self.lm_.predict_states_batch(data)
+        lm_states = np.concatenate([np.zeros_like(lm_states[:,:1]), lm_states], axis=1)
+        right_pad_length = np.max(indexes)+1 - lm_states.shape[1]
+        if right_pad_length > 0:
+            right_pad = np.repeat(lm_states[:,-1:], right_pad_length, axis=1)
+            lm_states = np.concatenate([lm_states, right_pad], axis=1)
+        states = lm_states[np.arange(len(data))[:,None], indexes]
+        return states
+
     def transform_training_data(self, lemmas, features, letter_positions,
-                                targets, auxiliary_targets=None):
+                                targets, words, auxiliary_targets=None):
         """
 
         lemmas: list of strs,
@@ -568,6 +590,14 @@ class Inflector:
             for length, indexes in buckets_with_indexes]
         if self.use_symbol_statistics:
             symbol_data_by_buckets = [self._extract_symbol_data(bucket) for bucket in data_by_buckets]
+        if self.use_lm:
+            lm_data_by_buckets = []
+            for i, (_, indexes) in enumerate(buckets_with_indexes):
+                curr_positions = letter_positions_by_buckets[i]
+                curr_data = [[words[i], features[i]] for i in indexes]
+                curr_positions_in_target = np.arange(curr_positions.shape[1])[None,:] - curr_positions
+                curr_lm_data = self._make_lm_data(curr_data, curr_positions_in_target)
+                lm_data_by_buckets.append(curr_lm_data)
         targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
                               for length, indexes in buckets_with_indexes]
         history_targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
@@ -590,6 +620,8 @@ class Inflector:
         for i in range(len(answer)):
             if self.use_symbol_statistics:
                 answer[i] += (symbol_data_by_buckets[i],)
+            if self.use_lm:
+                answer[i] += (lm_data_by_buckets[i],)
             answer[i] += (targets_by_buckets[i],)
             for elem in auxiliary_targets_by_buckets:
                 answer[i] += (elem[i],)
@@ -615,14 +647,14 @@ class Inflector:
             auxiliary_letter_targets = list(map(list, zip(*auxiliary_letter_targets)))
         else:
             auxiliary_letter_targets = None
-        lemmas = [elem[0] for elem in data]
+        lemmas, words = [elem[0] for elem in data], [elem[1] for elem in data]
         features = [elem[2] for elem in data]
         letter_indexes = [elem[0] for elem in indexes_with_targets]
         targets = [elem[1] for elem in indexes_with_targets]
         if self.reverse:
             lemmas = [x[::-1] for x in lemmas]
         return self.transform_training_data(lemmas, features, letter_indexes,
-                                            targets, auxiliary_letter_targets)
+                                            targets, words, auxiliary_letter_targets)
 
     def train(self, data, alignments=None, dev_data=None, dev_alignments=None,
               alignments_outfile=None, save_file=None, model_file=None):
@@ -732,6 +764,8 @@ class Inflector:
             weights = model.get_weights()
             self.models_[i], self.encoders_[i], self.decoders_[i] = self._build_model(test=True)
             self.models_[i].set_weights(weights)
+        if self.use_lm:
+            self.lm_.rebuild_test()
         self.built_ = "test"
         return self
 
@@ -817,7 +851,7 @@ class Inflector:
             outputs = History(outputs, self.output_history, flatten=True, only_last=only_last)
         return outputs
 
-    def _build_decoder_network(self, inputs, source):
+    def _build_decoder_network(self, inputs, source, lm_inputs=None):
         to_concatenate = [inputs[0]] + inputs[2:] if self.features_after_decoder else inputs
         concatenated_inputs = kl.Concatenate()(to_concatenate)
         decoder = kl.LSTM(self.decoder_rnn_size, dropout=self.decoder_dropout,
@@ -830,6 +864,10 @@ class Inflector:
             decoder(concatenated_inputs, initial_state=initial_states)
         if self.features_after_decoder:
             decoder_outputs = kl.Concatenate()([decoder_outputs, inputs[1]])
+        if lm_inputs is not None:
+            if self.lm_dropout > 0.0:
+                lm_inputs = TemporalDropout(lm_inputs, self.lm_dropout)
+            decoder_outputs = kl.Concatenate()([decoder_outputs, lm_inputs])
         pre_outputs = kl.TimeDistributed(kl.Dense(
             self.dense_output_size, activation="relu", use_bias=False,
             input_shape=(self.decoder_rnn_size,)))(decoder_outputs)
@@ -883,6 +921,10 @@ class Inflector:
         letter_indexes_inputs = kl.Input(shape=(None,), dtype='int32')
         shifted_target_inputs = kl.Input(
             shape=(None,), name="shifted_target_inputs", dtype='int32')
+        if self.use_lm:
+            lm_inputs = kl.Input(shape=(None, self.lm_.decoder_rnn_size), dtype="float32")
+        else:
+            lm_inputs = None
         if self.use_symbol_statistics:
             symbol_statistics_inputs = kl.Input(shape=(None, 2*self.symbols_number),
                                                 name="symbol_stats_inputs", dtype="int32")
@@ -897,6 +939,8 @@ class Inflector:
                   letter_indexes_inputs, shifted_target_inputs]
         if self.use_symbol_statistics:
             inputs.append(symbol_statistics_inputs)
+        if self.use_lm:
+            inputs.append(lm_inputs)
         # буквы входного слова
         tiled_feature_inputs = self._build_feature_network(
             feature_inputs, kb.shape(aligned_symbol_outputs)[1])
@@ -904,7 +948,7 @@ class Inflector:
         shifted_outputs = self._build_history_network(shifted_target_inputs, only_last=test)
         to_decoder = [aligned_symbol_outputs, tiled_feature_inputs, shifted_outputs]
         first_output, initial_decoder_states, final_decoder_states =\
-            self._build_decoder_network(to_decoder, aligned_inputs)
+            self._build_decoder_network(to_decoder, aligned_inputs, lm_inputs=lm_inputs)
         if self.step_loss_weight:
             loss = ClassCrossEntropy([STEP_CODE], [self.step_loss_weight])
         else:
@@ -928,6 +972,8 @@ class Inflector:
         encoder = kb.function(to_encoder + [kb.learning_phase()], [symbol_outputs])
         decoder_inputs = [aligned_symbol_outputs, feature_inputs,
                           shifted_target_inputs, aligned_inputs]
+        if self.use_lm:
+            decoder_inputs.append(lm_inputs)
         decoder = kb.function(decoder_inputs + initial_decoder_states + [kb.learning_phase()],
                               [first_output] + final_decoder_states)
         return model, encoder, decoder

@@ -16,6 +16,7 @@ DEFAULT_PARAMS = {"beam_width": 1}
 def read_params(infile):
     with open(infile, "r", encoding="utf8") as fin:
         params = json.load(fin)
+    params["use_lm"] = params.get("use_lm", False)
     if "model" not in params:
         params["model"] = dict()
     if "predict" not in params:
@@ -84,7 +85,14 @@ if __name__ == "__main__":
         if load_file and os.path.exists(load_file):
             inflector = load_inflector(load_file)
         else:
-            inflector = Inflector(**params["model"])
+            lm_dir = params.get("lm_dir")
+            lm_name = params.get("lm_name")
+            lm_file = "{}-{}.json".format(language, mode)
+            if lm_name is not None:
+                lm_file = lm_name + "-" + lm_file
+            lm_file = os.path.join(lm_dir, lm_file)
+            use_lm = params["use_lm"] and os.path.exists(lm_file)
+            inflector = Inflector(use_lm=use_lm, lm_file=lm_file, **params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
             inflector.train(data, dev_data=dev_data, save_file=save_file)
