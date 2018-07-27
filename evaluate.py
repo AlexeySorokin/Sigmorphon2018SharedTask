@@ -9,11 +9,10 @@ from read import read_languages_infile, read_infile, MODES
 WIDTHS = [16, 6]
 
 
-def evaluate_files(infile, corr_file, sep=" "):
-    test_data, corr_data = read_infile(infile), read_infile(corr_file)
+def evaluate(test_data, corr_data):
     corr, cov, total, total_dist, best_dist = 0, 0, len(test_data), 0.0, 0.0
     for test_elem, corr_elem in zip(test_data, corr_data):
-        test_words = test_elem[1].split(sep)
+        test_words = test_elem[1]
         corr_word = corr_elem[1]
         if corr_word == test_words[0]:
             corr += 1
@@ -33,6 +32,13 @@ def evaluate_files(infile, corr_file, sep=" "):
             best_dist += best_distance
     answer = [100 * corr / total, 100 * cov / total, total_dist / total, best_dist / total]
     return answer
+
+
+def evaluate_files(infile, corr_file, sep=" "):
+    test_data, corr_data = read_infile(infile), read_infile(corr_file)
+    for elem in test_data:
+        elem[1] = elem[1].split(sep)
+    return evaluate(test_data, corr_data)
 
 
 def get_format_string(x, width=None):
