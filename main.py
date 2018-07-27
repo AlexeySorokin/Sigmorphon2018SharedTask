@@ -8,6 +8,7 @@ import keras.backend.tensorflow_backend as kbt
 
 from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector, predict_missed_answers
+from paradigm_classifier import ParadigmChecker
 from write import output_analysis
 
 DEFAULT_PARAMS = {"beam_width": 1}
@@ -22,7 +23,7 @@ def read_params(infile):
     return params
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-SHORT_OPTS = "l:o:S:L:m:tTP:"
+SHORT_OPTS = "l:o:S:L:m:tTP:p"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -35,6 +36,7 @@ if __name__ == "__main__":
     analysis_dir, pred_dir = "results", "predictions"
     to_train, to_test = True, True
     predict_dir, to_predict = None, False
+    use_paradigms = False
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
@@ -56,13 +58,16 @@ if __name__ == "__main__":
             to_test = False
         elif opt == "-P":
             predict_dir, to_predict = val, True
+        elif opt == "-p":
+            use_paradigms = True
     if languages is None:
         languages = [elem.rsplit("-", maxsplit=2) for elem in os.listdir(corr_dir)]
         languages = [(elem[0], elem[2]) for elem in languages if elem[1] == "train" and len(elem) >= 3]
     params = read_params(args[0])
     results = []
     model_format_string = '{1}-{2}' if model_name is None else '{0}-{1}-{2}'
-    for language, mode in languages:
+    print(sorted(languages))
+    for language, mode in sorted(languages):
         print(language, mode)
         infile = os.path.join(corr_dir, "{}-train-{}".format(language, mode))
         test_file = os.path.join(corr_dir, "{}-dev".format(language))
@@ -82,10 +87,16 @@ if __name__ == "__main__":
             inflector = Inflector(**params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
-            inflector.train(data, dev_data=dev_data, save_file=save_file,
-                            alignments_outfile="alignments-{}.out".format(filename))
+            inflector.train(data, dev_data=dev_data, save_file=save_file)
+        if use_paradigms:
+            paradigm_checker = ParadigmChecker().train(data)
         if to_test:
             answer = inflector.predict(test_data, **params["predict"])
+            if use_paradigms:
+                data_to_filter = [(elem[0], elem[2]) for elem in test_data]
+                words_in_answer  = [[x[0] for x in elem] for elem in answer]
+                probs_in_answer = [[x[1:] for x in elem]for elem in answer]
+                answer = paradigm_checker.filter(data_to_filter, words_in_answer, probs_in_answer)
             outfile = os.path.join(analysis_dir, filename) if analysis_dir is not None else None
             if outfile is not None:
                 with open(outfile, "w", encoding="utf8") as fout:
@@ -109,6 +120,8 @@ if __name__ == "__main__":
             data = read_infile(predict_file, feat_column=1)
             answer = inflector.predict(data, feat_column=-1, **params["predict"])
             outfile = os.path.join(predict_dir, filename+"-out")
+            if not os.path.exists(outfile):
+                continue
             with open(outfile, "w", encoding="utf8") as fout:
                 for source, predictions in zip(data, answer):
                     predicted_words = [elem[0] for elem in predictions]

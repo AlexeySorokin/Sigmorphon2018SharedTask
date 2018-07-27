@@ -5,7 +5,7 @@ def read_languages_infile(infile):
     answer = set()
     with open(infile, "r", encoding="utf8") as fin:
         for elem in fin.read().split():
-            elem = elem.split("-", maxsplit=1)
+            elem = elem.rsplit("-", maxsplit=1)
             if len(elem) == 1:
                 modes = MODES
             else:
