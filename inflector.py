@@ -971,7 +971,8 @@ class Inflector:
         return inputs, encoded_answers_by_buckets
 
     def predict(self, data, feat_column=2, known_answers=None,
-                return_alignment_positions=False, return_log=False, verbose=0, **kwargs):
+                return_alignment_positions=False, return_log=False,
+                log_base=10.0, verbose=0, **kwargs):
         """
 
         Parameters:
@@ -1003,7 +1004,7 @@ class Inflector:
                     answer[i].append(self.decode_answer(
                         curr_symbols, curr_prob,
                         return_alignment_positions=return_alignment_positions,
-                        return_log=return_log))
+                        return_log=return_log, log_base=log_base))
                 scores = np.array([10**(-elem[2]) for elem in answer[i]])
                 scores /= np.sum(scores)
                 for j, score in enumerate(scores):
@@ -1216,7 +1217,7 @@ class Inflector:
         #     curr_outputs[r,-1,mask] = 0.0
 
     def decode_answer(self, symbol_indexes, probs, return_alignment_positions=False,
-                      return_log=True, are_log_probs=True):
+                      return_log=True, log_base=10.0, are_log_probs=True):
         curr_pos, curr_prob_log, probs_to_return = 0, 0.0, []
         word, alignment_positions = "", []
         if symbol_indexes[0] != BEGIN:
@@ -1243,6 +1244,8 @@ class Inflector:
             answer += (alignment_positions,)
         if not return_log:
             answer[1] = [10.0**(-x) for x in probs_to_return]
+        else:
+            answer[1] = [x / np.log10(log_base) for x in probs_to_return]
         return answer
 
     # def test_prediction(self, data, alignments=None):
