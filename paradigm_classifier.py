@@ -161,7 +161,7 @@ class ParadigmLmClassifier:
                     curr_pattern_counts.items(), key=lambda x: x[1], reverse=True)[:self.max_paradigm_count]
                 new_descr_patterns.append((descr, curr_pattern_counts))
         for key, value in new_descr_patterns:
-            self.patterns[key] = value
+            self.patterns[key] = dict(value)
         if self.to_generate_patterns:
             self.generate_patterns()
         if dev_data is None:
@@ -242,7 +242,10 @@ class ParadigmLmClassifier:
             counts_by_forms = defaultdict(int)
             for pattern, count in patterns.items():
                 substitutor = self.substitutors[pattern]
-                forms = {elem[1] for elem in substitutor._make_all_forms(word)}
+                try:
+                    forms = {elem[1] for elem in substitutor._make_all_forms(word)}
+                except:
+                    forms = set()
                 curr_forms.update(forms)
                 for form in forms:
                     counts_by_forms[form] = max(counts_by_forms[form], count)
