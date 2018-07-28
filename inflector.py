@@ -9,6 +9,7 @@ from neural.common_neural import *
 from neural.cells import MultiConv1D, TemporalDropout, History, LocalAttention
 from neural.neural_LM import load_lm
 from aligner.mcmc_aligner import Aligner, output_alignment
+from pe import PairEncoder
 
 import keras.backend as kb
 if kb.backend() == "tensorflow":
@@ -224,7 +225,7 @@ class Inflector:
 
     UNKNOWN_FEATURE = 0
 
-    DEFAULT_ALIGNER_PARAMS = {"init_params": {"gap": 1, "initial_gap": 0}, "n_iter": 5,
+    DEFAULT_ALIGNER_PARAMS = {"init_params": {"gap": -1, "initial_gap": -1}, "n_iter": 5,
                               "init": "lcs", "separate_endings": True, "verbose": 0}
     MAX_STEPS_NUMBER = 3
 
@@ -542,7 +543,7 @@ class Inflector:
         if targets is not None:
             for i in range(1, bucket_length):
                 # shift the history only if last action was not the step symbol
-                answer[:,i] = np.where(targets[:,i-1,None] == self.STEP_CODE, answer[:,i-1],
+                answer[:,i] = np.where(targets[:,i-1,None] == STEP_CODE, answer[:,i-1],
                                        np.hstack([answer[:,i-1,1:], targets[:,i-1,None]]))
         return answer
 
@@ -685,6 +686,12 @@ class Inflector:
             self
 
         """
+        # if self.use_pair_encoding:
+        #     data_for_pair_encoding = [x for elem in data for x in elem[:2]]
+        #     self.pair_encoder = PairEncoder().fit(data_for_pair_encoding)
+        #     transformed_data = self.pair_encoder.transform(data_for_pair_encoding)
+        #     data = [[transformed_data[2*i], transformed_data[2*i+1], feats]
+        #             for i, (_, _, feats) in enumerate(data)]
         self._make_vocabulary(data)
         self._make_features([elem[2] for elem in data])
         if self.use_lm:
