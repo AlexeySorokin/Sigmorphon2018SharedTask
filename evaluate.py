@@ -78,8 +78,9 @@ if __name__ == "__main__":
         if model_name is not None:
             filename = "{}-{}".format(model_name, filename)
         infile = os.path.join(test_dir, filename)
-        corr_file = os.path.join(corr_dir, "{}-dev".format(language))
-        results.append([language, mode] + list(evaluate_files(infile, corr_file, sep=sep)))
+        if os.path.exists(infile):
+            corr_file = os.path.join(corr_dir, "{}-dev".format(language))
+            results.append([language, mode] + list(evaluate_files(infile, corr_file, sep=sep)))
     results.sort(key=lambda x: (x[0], MODES.index(x[1])))
     if outfile is not None:
         fout = open(outfile, "w", encoding="utf8")

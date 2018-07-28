@@ -31,6 +31,15 @@ def get_flection_length(pattern):
         return len(pattern[-1])
 
 
+def constants_to_pattern(constants):
+    variables = [str(i) for i in range(1, len(constants))]
+    answer = "".join("{}+{}+".format(*elem) for elem in zip(variables, constants[1:])).strip("+")
+    if constants[0] != "":
+        answer = constants[0] + "+" + answer
+    answer = answer.replace("++", "+")
+    return answer
+
+
 class ParadigmFragment:
     '''
     Класс, предназначенный для операций с описаниями фрагментов парадигм

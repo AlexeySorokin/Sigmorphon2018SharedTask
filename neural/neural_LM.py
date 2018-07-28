@@ -151,8 +151,8 @@ class NeuralLM:
             if not (attr.startswith("__") or inspect.ismethod(val) or
                     isinstance(getattr(NeuralLM, attr, None), property) or
                     isinstance(val, Vocabulary) or attr.isupper() or
-                    attr in ["callbacks", "model_", "_step_func_", "hidden_state_func_",
-                             "tag_codes_"]):
+                    attr in ["callbacks", "model_", "tag_codes_"] or
+                    attr.endswith("func_")):
                 info[attr] = val
             elif isinstance(val, Vocabulary):
                 info[attr] = val.jsonize()
@@ -328,7 +328,7 @@ class NeuralLM:
 
     def build(self, test=False):
         symbol_inputs = kl.Input(shape=(None,), dtype='int32')
-        symbol_embeddings = self._build_symbol_layer(symbol_inputs)
+        symbol_embeddings, mask = self._build_symbol_layer(symbol_inputs)
         memory, initial_encoder_states, final_encoder_states =\
             self._build_history(symbol_embeddings, only_last=test)
         if self.labels_ is not None:
@@ -341,7 +341,7 @@ class NeuralLM:
             inputs, to_decoder = [symbol_inputs], memory
         # lstm_outputs = kl.LSTM(self.rnn_size, return_sequences=True, dropout=self.dropout)(to_decoder)
         outputs, initial_decoder_states,\
-            final_decoder_states, lstm_outputs = self._build_output_network(to_decoder)
+            final_decoder_states, lstm_outputs, pre_outputs = self._build_output_network(to_decoder)
         compile_args = {"optimizer": ko.nadam(clipnorm=5.0), "loss": "categorical_crossentropy"}
         self.model_ = Model(inputs, outputs)
         self.model_.compile(**compile_args)
@@ -349,13 +349,16 @@ class NeuralLM:
             print(self.model_.summary())
         step_func_inputs = inputs + initial_decoder_states + initial_encoder_states
         step_func_outputs = [lstm_outputs] + final_decoder_states + final_encoder_states
+        logit_func_outputs = [pre_outputs] + final_decoder_states + final_encoder_states
         self._step_func_ = kb.Function(step_func_inputs + [kb.learning_phase()], step_func_outputs)
+        self._logit_step_func_ = kb.Function(step_func_inputs + [kb.learning_phase()], logit_func_outputs)
         self._state_func_ = kb.Function(inputs + [kb.learning_phase()], [lstm_outputs])
+        self._logit_func_ = kb.Function(inputs + [kb.learning_phase()], [pre_outputs])
         self.built_ = "test" if test else "train"
         return self
 
     def _build_symbol_layer(self, symbol_inputs):
-        # useful_symbols_mask = make_useful_symbols_mask(symbol_inputs, dtype="float32")
+        useful_symbols_mask = make_useful_symbols_mask(symbol_inputs, dtype="float32")
         if self.use_embeddings:
             answer = kl.Embedding(self.symbols_number_, self.embeddings_size)(symbol_inputs)
             if self.embeddings_dropout > 0.0:
@@ -363,8 +366,8 @@ class NeuralLM:
         else:
             answer = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number_},
                                output_shape=(None, self.symbols_number_))(symbol_inputs)
-        # answer = kl.Lambda(lambda x, y: x*y[...,None], arguments={"y": useful_symbols_mask})(answer)
-        return answer
+        answer = kl.Lambda(lambda x, y: x*y[...,None], arguments={"y": useful_symbols_mask})(answer)
+        return answer, useful_symbols_mask
 
     def _build_history(self, inputs, only_last=False):
         if not self.use_attention:
@@ -406,7 +409,7 @@ class NeuralLM:
         pre_outputs = kl.Dense(self.dense_output_size, activation="relu")(lstm_outputs)
         outputs = kl.TimeDistributed(
             kl.Dense(self.symbols_number_, activation="softmax"))(pre_outputs)
-        return outputs, initial_states, [final_c_states, final_h_states], lstm_outputs
+        return outputs, initial_states, [final_c_states, final_h_states], lstm_outputs, pre_outputs
 
     def rebuild(self, test=True):
         weights = self.model_.get_weights()
@@ -519,10 +522,11 @@ class NeuralLM:
                 answer[i] = (letter_score, total_score) if return_letter_scores else total_score
         return answer
 
-    def predict_states_batch(self, X):
+    def predict_states_batch(self, X, mode="state"):
         fields_number = 2 if self.labels_ is not None else 1
         X_test, indexes = self.transform(X, buckets_number=1, max_bucket_length=len(X))
-        states = self._state_func_(X_test[0][:fields_number])[0]
+        func = self._logit_func_  if mode == "logit" else self._state_func_
+        states = func(X_test[0][:fields_number] + [0])[0]
         return states
 
     def predict_proba(self, X, batch_size=256):

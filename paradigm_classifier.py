@@ -2,7 +2,7 @@ import sys
 from collections import defaultdict
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-
+from itertools import product
 
 from read import read_infile
 from pyparadigm.paradigm import LcsSearcher
@@ -11,7 +11,7 @@ from neural.neural_LM import NeuralLM
 from evaluate import evaluate
 
 
-LCS_SEARCHER_PARAMS = {"method": "modified_Hulden", "remove_constant_variables": True}
+LCS_SEARCHER_PARAMS = {"method": "modified_Hulden", "remove_constant_variables": False}
 DEFAULT_LM_PARAMS = {"nepochs": 50, "batch_size": 16,
                      "history": 5, "use_feats": True, "use_label": True,
                      "encoder_rnn_size": 64, "decoder_rnn_size": 64, "dense_output_size": 32,
@@ -74,7 +74,9 @@ class ParadigmChecker:
 class ParadigmLmClassifier:
 
     def __init__(self, forward_lm=None, reverse_lm=None, lm_params=None,
-                 basic_model=None, use_paradigm_counts=False, tune_weights=None,
+                 basic_model=None, use_basic_scores=True,
+                 to_generate_patterns=False, generate_long=False,
+                 use_paradigm_counts=False, tune_weights=None,
                  use_letter_scores=False, max_letter_score=-np.log(0.01),
                  max_lm_letter_score=-np.log(0.001),
                  basic_hyps_number=5, lm_hyps_number=5,
@@ -86,6 +88,9 @@ class ParadigmLmClassifier:
         self.reverse_lm = reverse_lm
         self.lm_params = lm_params or DEFAULT_LM_PARAMS
         self.basic_model = basic_model
+        self.use_basic_scores = (basic_model is not None) and use_basic_scores
+        self.to_generate_patterns = to_generate_patterns
+        self.generate_long = generate_long
         self.use_paradigm_counts = use_paradigm_counts
         self.tune_weights = tune_weights
         self.use_letter_scores = use_letter_scores
@@ -101,18 +106,54 @@ class ParadigmLmClassifier:
 
     @property
     def weights_dim(self):
-        return 2 + int(self.basic_model is not None) + int(self.use_paradigm_counts)
+        return 2 + int(self.use_basic_scores) + int(self.use_paradigm_counts)
+
+    def generate_patterns(self):
+        for descr, patterns in self.patterns.items():
+            prefixes, suffixes, middle, first_middle, second_middle = [set() for _ in range(5)]
+            for pattern in patterns:
+                substitutor = self.substitutors[pattern]
+                constant_fragments = [elem.const_fragments for elem in substitutor.paradigm_fragments]
+                fragment_pairs = list(zip(*constant_fragments))
+                if len(fragment_pairs) > 1:
+                    prefixes.add(fragment_pairs[0])
+                if len(fragment_pairs) > 1:
+                    suffixes.add(fragment_pairs[-1])
+                if len(fragment_pairs) == 3:
+                    middle.add(fragment_pairs[1])
+                if len(fragment_pairs) == 4:
+                    first_middle.add(fragment_pairs[1])
+                    second_middle.add(fragment_pairs[2])
+            curr_generated_patterns = set()
+            for first, second in product(prefixes, suffixes):
+                curr_generated_patterns.add(tuple(zip(first, second)))
+            for first, x, second in product(prefixes, middle, suffixes):
+                curr_generated_patterns.add(tuple(zip(first, x, second)))
+            if self.generate_long and len(curr_generated_patterns) < 100:
+                for first, x, y, second in product(prefixes, first_middle, second_middle, suffixes):
+                    curr_generated_patterns.add(tuple(zip(first, x, y, second)))
+            curr_generated_patterns = [tuple(constants_to_pattern(x) for x in elem)
+                                       for elem in curr_generated_patterns]
+            for elem in curr_generated_patterns:
+                if elem not in patterns:
+                    patterns[elem] = 0
+                    if elem not in self.substitutors:
+                        self.substitutors[elem] = ParadigmSubstitutor(elem)
+        return
+
 
     def train(self, data, dev_data=None, save_forward_lm=None, save_reverse_lm=None):
         paradigms = self.lcs_searcher.calculate_paradigms([tuple(elem[:2]) for elem in data])
         for (_, _, descr), (pattern, _) in zip(data, paradigms):
             try:
                 descr = tuple(descr)
-                if descr not in self.substitutors:
+                if pattern not in self.substitutors:
                     self.substitutors[pattern] = ParadigmSubstitutor(pattern)
                 self.patterns[descr][pattern] += 1
             except ValueError:
                 pass
+        if self.to_generate_patterns:
+            self.generate_patterns()
         if dev_data is None:
             np.random.seed(self.random_state)
             shuffled_data = data[:]
@@ -132,7 +173,7 @@ class ParadigmLmClassifier:
             self.weights = self.cls.coef_[0]
             self.weights /= np.linalg.norm(self.weights) / 3
         else:
-            self.weights = np.array([1.0, 1.0, 1.0])
+            self.weights = np.array([1.0] * self.weights_dim)
         return self
 
     def _get_lm_score(self, score):
@@ -222,12 +263,13 @@ class ParadigmLmClassifier:
             curr_probs = np.exp(-curr_scores) / np.sum(np.exp(-curr_scores))
             form_indexes = np.argsort(curr_probs)[::-1]
             forms_to_return, probs = [], []
-            for index in form_indexes[:n]:
+            for j, index in enumerate(form_indexes[:n]):
                 prob = curr_probs[index]
-                if prob < min_prob:
+                if prob < min_prob and j > 0:
                     break
                 forms_to_return.append(curr_forms[index])
                 probs.append(prob)
+            probs = np.array(probs) / np.sum(probs)
             answer.append((forms_to_return, probs))
         return answer
 
@@ -262,7 +304,7 @@ class ParadigmLmClassifier:
                     index = curr_lm_forms.index(form)
                     curr_score = [basic_score] + list(lm_scores[start+index])
                 else:
-                    curr_score = [basic_score] + [0.0] * (self.weights_dim - 1)
+                    curr_score = [basic_score] + [0.0] * (self.weights_dim - int(self.use_basic_scores))
                     indexes_for_lm.append((i, j))
                     new_data_for_lm.append((form, data[i][1]))
                 curr_scores.append(curr_score)
@@ -289,6 +331,8 @@ class ParadigmLmClassifier:
             scores[i][j, 1:] = elem
         indexes = [0] + list(np.cumsum([len(x) for x in scores]))
         scores = np.concatenate(scores, axis=0)
+        if not self.use_basic_scores:
+            scores = scores[:,1:]
         # scores[:,1:] /= 2.5
         scores = np.dot(scores, self.weights)
         return self._predict_forms(scores, group_forms, indexes, n=n, min_prob=min_prob)

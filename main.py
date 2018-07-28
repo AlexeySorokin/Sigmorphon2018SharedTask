@@ -9,6 +9,7 @@ import keras.backend.tensorflow_backend as kbt
 
 from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector, predict_missed_answers
+from neural.neural_LM import NeuralLM
 from paradigm_classifier import ParadigmChecker
 from write import output_analysis
 
@@ -25,7 +26,7 @@ def read_params(infile):
     return params
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-SHORT_OPTS = "l:o:S:L:m:tTP:p"
+SHORT_OPTS = "l:o:S:L:m:tTP:pC:"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -39,6 +40,7 @@ if __name__ == "__main__":
     to_train, to_test = True, True
     predict_dir, to_predict = None, False
     use_paradigms, use_lm = False, False
+    lm_config_path = None
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
@@ -62,6 +64,8 @@ if __name__ == "__main__":
             predict_dir, to_predict = val, True
         elif opt == "-p":
             use_paradigms = True
+        elif opt == "-C":
+            lm_config_path = val
     if languages is None:
         languages = [elem.rsplit("-", maxsplit=2) for elem in os.listdir(corr_dir)]
         languages = [(elem[0], elem[2]) for elem in languages if elem[1] == "train" and len(elem) >= 3]
@@ -76,7 +80,6 @@ if __name__ == "__main__":
         data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
         data *= params.get("data_multiple", 1)
         dev_data = test_data[:]
-        test_data = test_data[:20]
         # data_for_alignment = [elem[:2] for elem in data]
         # aligner = Aligner(n_iter=1, separate_endings=True, init="lcs",
         #                   init_params={"gap": 2, "initial_gap": 3})
@@ -86,13 +89,24 @@ if __name__ == "__main__":
         if load_file and os.path.exists(load_file):
             inflector = load_inflector(load_file)
         else:
-            lm_dir = params.get("lm_dir")
-            lm_name = params.get("lm_name")
-            lm_file = "{}-{}.json".format(language, mode)
-            if lm_name is not None:
-                lm_file = lm_name + "-" + lm_file
-            lm_file = os.path.join(lm_dir, lm_file)
-            use_lm = params["use_lm"] and os.path.exists(lm_file)
+            if params["use_lm"]:
+                lm_dir = params.get("lm_dir")
+                lm_name = params.get("lm_name")
+                lm_file = "{}-{}.json".format(language, mode)
+                if lm_name is not None:
+                    lm_file = lm_name + "-" + lm_file
+                if lm_dir is not None:
+                    lm_file = os.path.join(lm_dir, lm_file)
+                if not os.path.exists(lm_file):
+                    data_for_lm = [elem[1:] for elem in data]
+                    dev_data_for_lm = [elem[1:] for elem in dev_data]
+                    with open(lm_config_path, "r", encoding="utf8") as fin:
+                        lm_params = json.load(fin)
+                    lm = NeuralLM(**lm_params)
+                    lm.train(data_for_lm, dev_data_for_lm, save_file=lm_file)
+                use_lm = True
+            else:
+                use_lm = False
             inflector = Inflector(use_lm=use_lm, lm_file=lm_file, **params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
@@ -120,27 +134,27 @@ if __name__ == "__main__":
                     for source, predictions in zip(test_data, answer):
                         predicted_words = [elem[0] for elem in predictions]
                         fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
-            if inflector.use_lm:
-                inflector.lm_.rebuild(test=False)
-                lm_group_lengths = np.cumsum([len(predictions) for predictions in answer])
-                data_for_lm_scores = []
-                for source, predictions in zip(test_data, answer):
-                    data_for_lm_scores.extend([(elem[0], source[2]) for elem in predictions])
-                lm_scores = inflector.lm_.predict(data_for_lm_scores, return_letter_scores=True,
-                                                  return_log_probs=False)
-                lm_scores_by_groups = [lm_scores[start:lm_group_lengths[i+1]]
-                                       for i, start in enumerate(lm_group_lengths[:-1])]
-                with open("dump.out", "w", encoding="utf8") as fout:
-                    for source, predictions, curr_lm_scores in\
-                            zip(test_data, answer, lm_scores_by_groups):
-                        predicted_words = [elem[0] for elem in predictions]
-                        for elem, (letter_scores, word_score) in zip(predictions, curr_lm_scores):
-                            fout.write("\t".join([source[0], ";".join(source[2]), elem[0],
-                                                  "-".join("{:.2f}".format(100*x) for x in elem[1])]) + "\n")
-                            word = ['BOW'] + list(source[0]) + ['EOW']
-                            fout.write(" ".join("{}-{:.2f}".format(x, 100*y)
-                                                for x, y in zip(elem[0], letter_scores)) + "\t")
-                            fout.write("{:.2f}\n".format(word_score))
+            # if inflector.use_lm:
+            #     inflector.lm_.rebuild(test=False)
+            #     lm_group_lengths = [0] + list(np.cumsum([len(predictions) for predictions in answer]))
+            #     data_for_lm_scores = []
+            #     for source, predictions in zip(test_data, answer):
+            #         data_for_lm_scores.extend([(elem[0], source[2]) for elem in predictions])
+            #     lm_scores = inflector.lm_.predict(data_for_lm_scores, return_letter_scores=True,
+            #                                       return_log_probs=False)
+            #     lm_scores_by_groups = [lm_scores[start:lm_group_lengths[i+1]]
+            #                            for i, start in enumerate(lm_group_lengths[:-1])]
+            #     with open("dump_1.out", "w", encoding="utf8") as fout:
+            #         for source, predictions, curr_lm_scores in\
+            #                 zip(test_data, answer, lm_scores_by_groups):
+            #             predicted_words = [elem[0] for elem in predictions]
+            #             for elem, (letter_scores, word_score) in zip(predictions, curr_lm_scores):
+            #                 fout.write("\t".join([source[0], ";".join(source[2]), elem[0],
+            #                                       "-".join("{:.2f}".format(100*x) for x in elem[1])]) + "\n")
+            #                 word = list(elem[0]) + ['EOW']
+            #                 fout.write(" ".join("{}-{:.2f}".format(x, 100*y)
+            #                                     for x, y in zip(word, letter_scores)) + "\t")
+            #                 fout.write("{:.2f}\n".format(word_score))
 
             # answers_for_missed = predict_missed_answers(test_data, answer, inflector, **params["predict"])
             # analysis_file = os.path.join(analysis_dir, filename+"-analysis") if analysis_dir is not None else None

@@ -412,7 +412,7 @@ class Inflector:
 
     @property
     def inputs_number(self):
-        return 4 + int(self.use_symbol_statistics) + int(self.use_lm)
+        return 4 + int(self.use_symbol_statistics) + int(self.use_lm != False)
 
     @property
     def auxiliary_targets_number(self):
@@ -427,8 +427,16 @@ class Inflector:
         return self.lm_.encoder_rnn_size
 
     @property
+    def lm_state_dim(self):
+        return self.lm_.dense_output_size if self.use_lm == "logit" else self.lm_.decoder_rnn_size
+
+    @property
     def lm_decoder_dim(self):
         return self.lm_.decoder_rnn_size
+
+    @property
+    def lm_step_func(self):
+        return self.lm_._logit_step_func_ if self.use_lm == "logit" else self.lm_._step_func_
 
     def _make_vocabulary(self, X):
         symbols = {a for first, second, _ in X for a in first+second}
@@ -564,7 +572,7 @@ class Inflector:
         return targets_with_copy
 
     def _make_lm_data(self, data, indexes):
-        lm_states = self.lm_.predict_states_batch(data)
+        lm_states = self.lm_.predict_states_batch(data, mode=self.use_lm)
         lm_states = np.concatenate([np.zeros_like(lm_states[:,:1]), lm_states], axis=1)
         right_pad_length = np.max(indexes)+1 - lm_states.shape[1]
         if right_pad_length > 0:
@@ -789,12 +797,14 @@ class Inflector:
         return self
 
     def _build_word_network(self, inputs, feature_inputs, stats_inputs=None):
+        useful_symbols_mask = make_useful_symbols_mask(inputs, dtype="float32")
         if self.use_embeddings:
             embedding = kl.Embedding(self.symbols_number, self.embeddings_size)
         else:
             embedding = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
                                   output_shape=(None, self.symbols_number))
         outputs = embedding(inputs)
+        outputs = kl.Lambda(lambda x, y: x * y[..., None], arguments={"y": useful_symbols_mask})(outputs)
         if self.conv_layers > 0:
             outputs = MultiConv1D(outputs, self.conv_layers, self.conv_window,
                                   self.conv_filters, self.conv_dropout, activation="relu")
@@ -883,13 +893,17 @@ class Inflector:
             decoder(concatenated_inputs, initial_state=initial_states)
         if self.features_after_decoder:
             decoder_outputs = kl.Concatenate()([decoder_outputs, inputs[1]])
-        if lm_inputs is not None:
+        if lm_inputs is not None and self.use_lm != "logit":
             if self.lm_dropout > 0.0:
                 lm_inputs = TemporalDropout(lm_inputs, self.lm_dropout)
             decoder_outputs = kl.Concatenate()([decoder_outputs, lm_inputs])
         pre_outputs = kl.TimeDistributed(kl.Dense(
             self.dense_output_size, activation="relu", use_bias=False,
             input_shape=(self.decoder_rnn_size,)))(decoder_outputs)
+        if lm_inputs is not None and self.use_lm == "logit":
+            if self.lm_dropout > 0.0:
+                lm_inputs = TemporalDropout(lm_inputs, self.lm_dropout)
+            pre_outputs = kl.Concatenate()([pre_outputs, lm_inputs])
         output_name = "outputs" if not self.use_decoder_gate else "basic_outputs"
         outputs = kl.TimeDistributed(kl.Dense(
             self.symbols_number, activation="softmax", name=output_name,
@@ -941,7 +955,7 @@ class Inflector:
         shifted_target_inputs = kl.Input(
             shape=(None,), name="shifted_target_inputs", dtype='int32')
         if self.use_lm:
-            lm_inputs = kl.Input(shape=(None, self.lm_.decoder_rnn_size), dtype="float32")
+            lm_inputs = kl.Input(shape=(None, self.lm_state_dim), dtype="float32")
         else:
             lm_inputs = None
         if self.use_symbol_statistics:
@@ -1128,7 +1142,7 @@ class Inflector:
         h_states = np.zeros(shape=(M, self.models_number, self.decoder_rnn_size), dtype="float32")
         c_states = np.zeros(shape=(M, self.models_number, self.decoder_rnn_size), dtype="float32")
         if self.use_lm:
-            lm_states = np.zeros(shape=(M, self.lm_decoder_dim), dtype="float32")
+            lm_states = np.zeros(shape=(M, self.lm_state_dim), dtype="float32")
             # lm_encoder_states = np.zeros(shape=(2, M, self.lm_encoder_dim), dtype="float32")
             lm_decoder_states = np.zeros(shape=(M, 2, self.lm_decoder_dim), dtype="float32")
             encoded_features = [self.lm_._make_feature_vector(x) for x in source_features]
@@ -1234,7 +1248,7 @@ class Inflector:
             # нужно пересчитать состояния языковой модели
             if self.use_lm and len(symbol_outputs_indexes) > 0:
                 indexes_to_update_states = []
-                new_lm_states = np.zeros(shape=(M, self.lm_decoder_dim), dtype="float32")
+                new_lm_states = np.zeros(shape=(M, self.lm_state_dim), dtype="float32")
                 # lm_encoder_states = np.zeros(shape=(2, M, self.lm_encoder_dim), dtype="float32")
                 new_lm_decoder_states = np.zeros(shape=(M, 2, self.lm_decoder_dim), dtype="float32")
                 for old_index, index, letter in symbol_outputs_indexes:
@@ -1253,7 +1267,7 @@ class Inflector:
                     to_step = [np.array(lm_histories), np.array(curr_features),
                                new_lm_decoder_states[indexes_to_update_states,0],
                                new_lm_decoder_states[indexes_to_update_states,1]]
-                    from_step = self.lm_._step_func_(to_step + [0])
+                    from_step = self.lm_step_func(to_step + [0])
                     for j, (index, state, c_state, h_state) in\
                             enumerate(zip(indexes_to_update_states, *from_step)):
                         new_lm_states[index] = state

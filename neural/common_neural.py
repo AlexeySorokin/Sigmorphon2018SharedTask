@@ -16,8 +16,9 @@ def _useful_symbols_mask_func(X, dtype):
     """
     возвращает маску, содержащую нули на месте нулей, идущих до содержательных символов
     """
-    X = kb.cast(kb.not_equal(X, 0), X.dtype)
+    X = kb.cast(kb.not_equal(X, 0), dtype="int32")
     X_max = kb.max(X, axis=1)[:,None]
+    X, X_max = kb.cast(X, "int32"), kb.cast(X_max, "int32")
     return kb.cast(kb.greater_equal(kb.cumsum(X, axis=1), X_max), dtype=dtype)
 
 def make_useful_symbols_mask(X, dtype=bool):

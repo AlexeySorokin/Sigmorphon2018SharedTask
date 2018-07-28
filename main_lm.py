@@ -6,7 +6,7 @@ import getopt
 import tensorflow as tf
 import keras.backend.tensorflow_backend as kbt
 
-from read import read_infile
+from read import read_infile, read_languages_infile
 from inflector import load_inflector
 from neural.neural_LM import NeuralLM, load_lm
 from paradigm_classifier import ParadigmLmClassifier
@@ -14,25 +14,39 @@ from evaluate import evaluate, WIDTHS, get_format_string
 
 
 cls_config = {"tune_weights": False, "use_paradigm_counts": False, "verbose": 0}
-languages = ["spanish"]
-modes = ["low"] * 1
+languages = ["belarusian", "kabardian", "latin", "navajo", "spanish"]
+modes = ["high"] * 5
 
-SHORT_OPTS = "M:m:"
+SHORT_OPTS = "M:m:sgl:p:"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
     config.gpu_options.per_process_gpu_memory_fraction = 0.3
     kbt.set_session(tf.Session(config=config))
-    config_file = sys.argv[1]
+    # config_file = sys.argv[1]
     metrics = []
-    use_model, model_dir, model_name = False, None, None
+    use_model, model_dir, model_name, use_model_scores = False, None, None, True
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
+    language_file, test_data_dir, to_generate_patterns = None, "conll2018/task1/all", False
+    predictions_dir = None
     for opt, val in opts:
         if opt == "-M":
             use_model, model_dir = True, val
         elif opt == "-m":
             model_name = val
-    for language, mode in zip(languages, modes):
+        elif opt == "-s":
+            use_model_scores = False
+        elif opt == "-g":
+            to_generate_patterns = True
+        elif opt == "-l":
+            language_file = val
+        elif opt == "-p":
+            predictions_dir = val
+    if language_file is not None:
+        languages = read_languages_infile(language_file)
+    else:
+        languages = list(zip(languages, modes))
+    for language, mode in languages:
         input_dir = os.path.join("conll2018", "task1", "all")
         infile = os.path.join(input_dir, "{}-train-{}".format(language, mode))
         dev_file = os.path.join(input_dir, "{}-dev".format(language))
@@ -52,8 +66,9 @@ if __name__ == "__main__":
         forward_lm = load_lm(forward_save_file) if os.path.exists(forward_save_file) else None
         reverse_save_file = "language_models/reverse-{}-{}.json".format(language, mode)
         reverse_lm = load_lm(reverse_save_file) if os.path.exists(reverse_save_file) else None
-        cls = ParadigmLmClassifier(basic_model=basic_model, forward_lm=forward_lm,
-                                   reverse_lm=reverse_lm, **cls_config)
+        cls = ParadigmLmClassifier(basic_model=basic_model, use_basic_scores=use_model_scores,
+                                   to_generate_patterns=to_generate_patterns,
+                                   forward_lm=forward_lm, reverse_lm=reverse_lm, **cls_config)
         cls.train(data, dev_data, save_forward_lm=forward_save_file, save_reverse_lm=reverse_save_file)
         data_to_predict = [(x[0], x[2]) for x in dev_data]
         answer = cls.predict(data_to_predict, n=5)
@@ -73,6 +88,19 @@ if __name__ == "__main__":
         metrics.append(metrics_data)
         if not cls.verbose:
             print(language, format_string.format(*metrics_data), end="")
+        if predictions_dir is not None:
+            predict_file = os.path.join(test_data_dir, "{}-covered-test".format(language))
+            data = read_infile(predict_file, feat_column=1)
+            answer = cls.predict(data, n=5)
+            outfile = os.path.join(predictions_dir, "{}-{}-out".format(language, mode))
+            if not os.path.exists(predictions_dir):
+                continue
+            with open(outfile, "w", encoding="utf8") as fout:
+                for source, predictions in zip(data, answer):
+                    predicted_words = [elem[0] for elem in predictions]
+                    for word in predicted_words[:1]:
+                        fout.write("\t".join([source[0], word, ";".join(source[-1])]) + "\n")
+            print("Predicted for {}-{}".format(language, mode))
     if len(languages) > 0 and cls.verbose:
         for language, curr_metrics in zip(languages, metrics):
             print(language, format_string.format(*curr_metrics), end="")
