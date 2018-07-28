@@ -9,7 +9,7 @@ from neural.common_neural import *
 from neural.cells import MultiConv1D, TemporalDropout, History, LocalAttention
 from neural.neural_LM import load_lm
 from aligner.mcmc_aligner import Aligner, output_alignment
-from pe import PairEncoder
+# from pe import PairEncoder
 
 import keras.backend as kb
 if kb.backend() == "tensorflow":

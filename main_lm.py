@@ -15,7 +15,7 @@ from evaluate import evaluate, WIDTHS, get_format_string
 
 cls_config = {"tune_weights": False, "use_paradigm_counts": False, "verbose": 0}
 languages = ["belarusian", "kabardian", "latin", "navajo", "spanish"]
-modes = ["highpyth"] * 5
+modes = ["high"] * 5
 
 SHORT_OPTS = "M:m:sgl:p:"
 

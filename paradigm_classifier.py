@@ -11,7 +11,7 @@ from neural.neural_LM import NeuralLM
 from evaluate import evaluate
 
 
-LCS_SEARCHER_PARAMS = {"method": "modified_Hulden", "remove_constant_variables": False}
+LCS_SEARCHER_PARAMS = {"method": "modified_Hulden", "remove_constant_variables": True}
 DEFAULT_LM_PARAMS = {"nepochs": 50, "batch_size": 16,
                      "history": 5, "use_feats": True, "use_label": True,
                      "encoder_rnn_size": 64, "decoder_rnn_size": 64, "dense_output_size": 32,
@@ -76,6 +76,7 @@ class ParadigmLmClassifier:
     def __init__(self, forward_lm=None, reverse_lm=None, lm_params=None,
                  basic_model=None, use_basic_scores=True,
                  to_generate_patterns=False, generate_long=False,
+                 max_paradigm_count=100,
                  use_paradigm_counts=False, tune_weights=None,
                  use_letter_scores=False, max_letter_score=-np.log(0.01),
                  max_lm_letter_score=-np.log(0.001),
@@ -91,6 +92,7 @@ class ParadigmLmClassifier:
         self.use_basic_scores = (basic_model is not None) and use_basic_scores
         self.to_generate_patterns = to_generate_patterns
         self.generate_long = generate_long
+        self.max_paradigm_count = max_paradigm_count
         self.use_paradigm_counts = use_paradigm_counts
         self.tune_weights = tune_weights
         self.use_letter_scores = use_letter_scores
@@ -152,6 +154,14 @@ class ParadigmLmClassifier:
                 self.patterns[descr][pattern] += 1
             except ValueError:
                 pass
+        new_descr_patterns = []
+        for descr, curr_pattern_counts in self.patterns.items():
+            if len(curr_pattern_counts) > self.max_paradigm_count:
+                curr_pattern_counts = sorted(
+                    curr_pattern_counts.items(), key=lambda x: x[1], reverse=True)[:self.max_paradigm_count]
+                new_descr_patterns.append((descr, curr_pattern_counts))
+        for key, value in new_descr_patterns:
+            self.patterns[key] = value
         if self.to_generate_patterns:
             self.generate_patterns()
         if dev_data is None:
