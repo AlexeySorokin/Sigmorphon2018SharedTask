@@ -102,5 +102,5 @@ if __name__ == "__main__":
                         fout.write("\t".join([source[0], word, ";".join(source[-1])]) + "\n")
             print("Predicted for {}-{}".format(language, mode))
     if len(languages) > 0:
-        for language, curr_metrics in zip(languages, metrics):
-            print(language, format_string.format(*curr_metrics), end="")
+        for (language, mode), curr_metrics in zip(languages, metrics):
+            print(language, mode, format_string.format(*curr_metrics), end="")
