@@ -146,13 +146,14 @@ class ParadigmLmClassifier:
 
     def train(self, data, dev_data=None, save_forward_lm=None, save_reverse_lm=None):
         paradigms = self.lcs_searcher.calculate_paradigms([tuple(elem[:2]) for elem in data])
-        for (_, _, descr), (pattern, _) in zip(data, paradigms):
+        for (word, _, descr), (pattern, _) in zip(data, paradigms):
             try:
                 descr = tuple(descr)
                 if pattern not in self.substitutors:
                     self.substitutors[pattern] = ParadigmSubstitutor(pattern)
                 self.patterns[descr][pattern] += 1
-            except ValueError:
+            except:
+                x = 1
                 pass
         new_descr_patterns = []
         for descr, curr_pattern_counts in self.patterns.items():

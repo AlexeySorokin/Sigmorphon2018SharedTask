@@ -67,6 +67,8 @@ class ParadigmFragment:
         regexp = "^"  # регулярное выражение, соответствующее шаблону
         var_fragments_count = 0
         start_positions_in_regexp = []
+        for x in "()*[]":
+            descr = descr.replace(x, "\\" + x)
         splitted_descr = descr.split("+")
         last_constant_fragment = ""
         for i, part in enumerate(splitted_descr):
@@ -96,6 +98,8 @@ class ParadigmFragment:
         if var_fragments_count > 0:
             regexp += ".*"
         regexp += "{0}$".format(last_constant_fragment)
+        # regexp = regexp.replace('(', '\(')
+        # regexp = regexp.replace(')', '\)')
         self._regexp = re.compile(regexp)
         # регулярные выражения для участков шаблона
         # например, для шаблона 1+о+2+а self._fragments_regexps
