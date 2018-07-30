@@ -103,4 +103,4 @@ if __name__ == "__main__":
             print("Predicted for {}-{}".format(language, mode))
     if len(languages) > 0:
         for (language, mode), curr_metrics in zip(languages, metrics):
-            print(language, mode, format_string.format(*curr_metrics), end="")
+            print("{:<24}{:<6}".format(language, mode), format_string.format(*curr_metrics), end="")
