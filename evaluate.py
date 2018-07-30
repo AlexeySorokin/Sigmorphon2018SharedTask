@@ -9,6 +9,20 @@ from read import read_languages_infile, read_infile, MODES
 WIDTHS = [16, 6]
 
 
+def prettify_metrics(metrics):
+    format_string, metrics_data = [], []
+    for i, elem in enumerate(metrics):
+        width = WIDTHS[i] if i < len(WIDTHS) else None
+        format_string.append(get_format_string(elem, width=width))
+        if isinstance(elem, list):
+            metrics_data.append(" ".join(str(x) for x in elem))
+        elif isinstance(elem, dict):
+            metrics_data.append(" ".join("{}:{:.2f}".format(*x) for x in sorted(elem.items())))
+        else:
+            metrics_data.append(elem)
+    format_string = "\t".join(format_string) + "\n"
+    return format_string.format(*metrics_data), metrics_data
+
 def evaluate(test_data, corr_data):
     corr, cov, total, total_dist, best_dist = 0, 0, len(test_data), 0.0, 0.0
     for test_elem, corr_elem in zip(test_data, corr_data):

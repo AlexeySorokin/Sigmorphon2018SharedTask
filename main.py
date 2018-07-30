@@ -11,6 +11,7 @@ from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector, predict_missed_answers
 from neural.neural_LM import NeuralLM
 from paradigm_classifier import ParadigmChecker
+from evaluate import evaluate, prettify_metrics
 from write import output_analysis
 
 DEFAULT_PARAMS = {"beam_width": 1}
@@ -26,7 +27,7 @@ def read_params(infile):
     return params
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-SHORT_OPTS = "l:o:S:L:m:tTP:pC:"
+SHORT_OPTS = "l:o:S:L:m:tTP:pC:e"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -36,7 +37,7 @@ if __name__ == "__main__":
     languages = None
     corr_dir = os.path.join("conll2018", "task1", "all")
     save_dir, load_dir, model_name = None, None, None
-    analysis_dir, pred_dir = "results", "predictions"
+    analysis_dir, pred_dir, to_evaluate = "results", "predictions", False
     to_train, to_test = True, True
     predict_dir, to_predict = None, False
     use_paradigms, use_lm = False, False
@@ -66,6 +67,8 @@ if __name__ == "__main__":
             use_paradigms = True
         elif opt == "-C":
             lm_config_path = val
+        elif opt == "-e":
+            to_evaluate = True
     if languages is None:
         languages = [elem.rsplit("-", maxsplit=2) for elem in os.listdir(corr_dir)]
         languages = [(elem[0], elem[2]) for elem in languages if elem[1] == "train" and len(elem) >= 3]
@@ -73,6 +76,7 @@ if __name__ == "__main__":
     results = []
     model_format_string = '{1}-{2}' if model_name is None else '{0}-{1}-{2}'
     print(sorted(languages))
+    metrics = []
     for language, mode in sorted(languages):
         print(language, mode)
         infile = os.path.join(corr_dir, "{}-train-{}".format(language, mode))
@@ -134,6 +138,13 @@ if __name__ == "__main__":
                     for source, predictions in zip(test_data, answer):
                         predicted_words = [elem[0] for elem in predictions]
                         fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
+            if to_evaluate:
+                answer_to_evaluate = [(word, [x[0] for x in elem], feats)
+                                      for (word, _, feats), elem in zip(test_data, answer)]
+                curr_metrics = evaluate(answer_to_evaluate, dev_data)
+                curr_metrics = prettify_metrics(curr_metrics)
+                metrics.append(((language, mode), curr_metrics[1]))
+                print(curr_metrics[0], end="")
             # if inflector.use_lm:
             #     inflector.lm_.rebuild(test=False)
             #     lm_group_lengths = [0] + list(np.cumsum([len(predictions) for predictions in answer]))
@@ -165,11 +176,14 @@ if __name__ == "__main__":
             data = read_infile(predict_file, feat_column=1)
             answer = inflector.predict(data, feat_column=-1, **params["predict"])
             outfile = os.path.join(predict_dir, filename+"-out")
-            if not os.path.exists(outfile):
+            if not os.path.exists(predict_dir):
                 continue
             with open(outfile, "w", encoding="utf8") as fout:
                 for source, predictions in zip(data, answer):
                     predicted_words = [elem[0] for elem in predictions]
                     for word in predicted_words[:1]:
                         fout.write("\t".join([source[0], word, ";".join(source[-1])]) + "\n")
+    if len(metrics) > 0:
+        for elem in metrics:
+            print("-".join(elem[0]), " ".join("{:.2f}".format(x) for x in elem[1]))
 
