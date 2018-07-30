@@ -968,10 +968,15 @@ def make_string_descr(descr):
     """
     string_descr = []
     for fragment in descr:
+        fragment = tuple(x.replace("}", "}}") for x in fragment)
         if fragment == '-':
             string_descr.append('-')
             continue
-        fragment_repr = "+{}+".join(fragment).format(*range(1, len(fragment)))
+        try:
+            fragment_repr = "+{}+".join(fragment).format(*range(1, len(fragment)))
+        except:
+            x = 1
+            pass
         fragment_repr = re.sub("[+]+", "+", fragment_repr.strip('+'))
         string_descr.append(fragment_repr)
     return tuple(string_descr)
