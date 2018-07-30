@@ -213,6 +213,8 @@ def load_inflector(infile):
     if inflector.use_lm and not hasattr(inflector, "recodings_for_lm_"):
         inflector.recodings_for_lm_ =\
             {i: inflector.lm_.toidx(x) for i, x in enumerate(inflector.symbols_)}
+    else:
+        inflector.recodings_for_lm_ = {int(i): x for i, x in enumerate(inflector.recodings_for_lm_.items())}
     # модель
     inflector.build()  # не работает сохранение модели, приходится сохранять только веса
     for i, (model, model_file) in enumerate(
