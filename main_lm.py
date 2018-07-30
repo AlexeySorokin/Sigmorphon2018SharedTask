@@ -101,6 +101,6 @@ if __name__ == "__main__":
                     for word in predicted_words[:1]:
                         fout.write("\t".join([source[0], word, ";".join(source[-1])]) + "\n")
             print("Predicted for {}-{}".format(language, mode))
-    if len(languages) > 0 and cls.verbose:
+    if len(languages) > 0:
         for language, curr_metrics in zip(languages, metrics):
             print(language, format_string.format(*curr_metrics), end="")
