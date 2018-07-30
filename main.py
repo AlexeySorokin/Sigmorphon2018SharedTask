@@ -27,7 +27,7 @@ def read_params(infile):
     return params
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-SHORT_OPTS = "l:o:S:L:m:tTP:pC:e"
+SHORT_OPTS = "l:o:S:L:m:tTP:pC:eE:"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     languages = None
     corr_dir = os.path.join("conll2018", "task1", "all")
     save_dir, load_dir, model_name = None, None, None
-    analysis_dir, pred_dir, to_evaluate = "results", "predictions", False
+    analysis_dir, pred_dir, to_evaluate, eval_outfile = "results", "predictions", False, None
     to_train, to_test = True, True
     predict_dir, to_predict = None, False
     use_paradigms, use_lm = False, False
@@ -69,6 +69,8 @@ if __name__ == "__main__":
             lm_config_path = val
         elif opt == "-e":
             to_evaluate = True
+        elif opt == "-E":
+            eval_outfile = val
     if languages is None:
         languages = [elem.rsplit("-", maxsplit=2) for elem in os.listdir(corr_dir)]
         languages = [(elem[0], elem[2]) for elem in languages if elem[1] == "train" and len(elem) >= 3]
@@ -91,7 +93,7 @@ if __name__ == "__main__":
         filename = model_format_string.format(model_name, language, mode)
         load_file = os.path.join(load_dir, filename + ".json") if load_dir is not None else None
         if load_file and os.path.exists(load_file):
-            inflector = load_inflector(load_file)
+            inflector = load_inflector(load_file, verbose=0)
         else:
             if params["use_lm"]:
                 lm_dir = params.get("lm_dir")
@@ -186,4 +188,10 @@ if __name__ == "__main__":
     if len(metrics) > 0:
         for elem in metrics:
             print("-".join(elem[0]), " ".join("{:.2f}".format(x) for x in elem[1]))
+        if eval_outfile is not None:
+            with open(eval_outfile, "w", encoding="utf8") as fout:
+                for elem in metrics:
+                    fout.write("{}{}\n".format("-".join(elem[0]),
+                                               " ".join("{:.2f}".format(x) for x in elem[1])))
+
 

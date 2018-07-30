@@ -193,11 +193,12 @@ def extend_history(histories, hyps, indexes, start=0, pos=None,
     return
 
 
-def load_inflector(infile):
+def load_inflector(infile, verbose=1):
     with open(infile, "r", encoding="utf8") as fin:
         json_data = json.load(fin)
     args = {key: value for key, value in json_data.items()
             if not (key.endswith("_") or key.endswith("callback") or key == "model_files")}
+    args['verbose'] = verbose
     # коллбэки
     args['callbacks'] = []
     for key, cls in zip(["early_stopping_callback", "reduce_LR_callback"],
