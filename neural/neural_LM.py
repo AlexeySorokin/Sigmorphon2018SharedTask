@@ -27,7 +27,7 @@ from .common import *
 from .common import generate_data
 from .common_neural import make_useful_symbols_mask
 from .vocabulary import Vocabulary, vocabulary_from_json
-from .cells import History, AttentionCell, attention_func
+from .cells import History, AttentionCell, attention_func, Gumbel
 
 def to_one_hot(indices, num_classes):
     """
@@ -102,6 +102,8 @@ class NeuralLM:
                  feature_embedding_layers=False, feature_embeddings_size=32,
                  rnn="lstm", encoder_rnn_size=64,
                  decoder_rnn_size=64, dense_output_size=32,
+                 use_cls_loss=False, output_embeddings_size=32,
+                 cls_rnn_size=64, cls_dense_units=32,
                  embeddings_dropout=0.0, encoder_dropout=0.0, decoder_dropout=0.0,
                  random_state=187, verbose=1, callbacks=None,
                  # use_custom_callback=False
@@ -126,6 +128,11 @@ class NeuralLM:
         self.encoder_rnn_size = encoder_rnn_size
         self.decoder_rnn_size = decoder_rnn_size
         self.dense_output_size = dense_output_size
+        #
+        self.use_cls_loss = use_cls_loss
+        self.output_embeddings_size = output_embeddings_size
+        self.cls_rnn_size = cls_rnn_size
+        self.cls_dense_units = cls_dense_units
         # self.dropout = dropout
         self.embeddings_dropout = embeddings_dropout
         self.encoder_dropout = encoder_dropout
@@ -203,9 +210,9 @@ class NeuralLM:
         # создаём словари нужного размера
         self.labels_ = AUXILIARY + sorted(labels) + sorted(features)
         self.label_codes_ = {x: i for i, x in enumerate(self.labels_)}
-        if self.use_full_tags:
-            self.tags_ = sorted(tags)
-            self.tag_codes_ = {x: i for i, x in enumerate(self.tags_)}
+        # if self.use_full_tags:
+        self.tags_ = sorted(tags)
+        self.tag_codes_ = {x: i for i, x in enumerate(self.tags_)}
         return self
 
     @property
@@ -218,6 +225,10 @@ class NeuralLM:
             return len(self.labels_) + len(self.tags_) * int(self.use_full_tags)
         else:
             return 0
+
+    @property
+    def inputs_number(self):
+        return 1 + int(self.use_label)
 
     def toidx(self, x):
         return self.vocabulary_.toidx(x)
@@ -297,6 +308,14 @@ class NeuralLM:
         for i, elem in enumerate(data_by_buckets):
             curr_answer = np.concatenate([elem[0][:,1:], PAD*np.ones_like(elem[0][:,-1:])], axis=1)
             elem.append(curr_answer)
+            if self.use_cls_loss:
+                bucket_features = [tuple(X[index][1]) for index in buckets_with_indexes[i][1]]
+                bucket_features = [self.tag_codes_.get(x, -1) for x in bucket_features]
+                encoded_bucket_features = np.zeros(shape=(len(elem[0]), len(self.tag_codes_)))
+                for j, index in enumerate(bucket_features):
+                    if index >= 0:
+                        encoded_bucket_features[j, index] = 1
+                elem.append(encoded_bucket_features)
         if return_indexes:
             return data_by_buckets, [elem[1] for elem in buckets_with_indexes]
         else:
@@ -326,6 +345,15 @@ class NeuralLM:
         self.train_model(X_train, X_dev, model_file=model_file)
         return self
 
+    def _build_classification_network(self, inputs):
+        probs = Gumbel(inputs, t=0.1)
+        embeddings = kl.TimeDistributed(
+            kl.Dense(self.output_embeddings_size, use_bias=False))(probs)
+        state = kl.LSTM(self.cls_rnn_size)(embeddings)
+        state = kl.Dense(self.cls_dense_units, activation="relu")(state)
+        cls_probs = kl.Dense(len(self.tag_codes_), activation="softmax")(state)
+        return cls_probs
+
     def build(self, test=False):
         symbol_inputs = kl.Input(shape=(None,), dtype='int32')
         symbol_embeddings, mask = self._build_symbol_layer(symbol_inputs)
@@ -342,9 +370,15 @@ class NeuralLM:
         # lstm_outputs = kl.LSTM(self.rnn_size, return_sequences=True, dropout=self.dropout)(to_decoder)
         outputs, initial_decoder_states,\
             final_decoder_states, lstm_outputs, pre_outputs = self._build_output_network(to_decoder)
+        if self.use_cls_loss:
+            label_probs = self._build_classification_network(pre_outputs)
+            weights = [1.0, 0.5]
+            model_output = [outputs, label_probs]
+        else:
+            weights, model_output = None, outputs
         compile_args = {"optimizer": ko.nadam(clipnorm=5.0), "loss": "categorical_crossentropy"}
-        self.model_ = Model(inputs, outputs)
-        self.model_.compile(**compile_args)
+        self.model_ = Model(inputs, model_output)
+        self.model_.compile(loss_weights=weights, **compile_args)
         if self.verbose > 0:
             print(self.model_.summary())
         step_func_inputs = inputs + initial_decoder_states + initial_encoder_states
@@ -406,7 +440,7 @@ class NeuralLM:
             initial_states[i] = kb.tile(elem[:, None], [1, self.encoder_rnn_size])
         decoder = kl.LSTM(self.decoder_rnn_size, return_sequences=True, return_state=True)
         lstm_outputs, final_c_states, final_h_states = decoder(inputs, initial_state=initial_states)
-        pre_outputs = kl.Dense(self.dense_output_size, activation="relu")(lstm_outputs)
+        pre_outputs = kl.TimeDistributed(kl.Dense(self.dense_output_size, activation="relu"))(lstm_outputs)
         outputs = kl.TimeDistributed(
             kl.Dense(self.symbols_number_, activation="softmax"))(pre_outputs)
         return outputs, initial_states, [final_c_states, final_h_states], lstm_outputs, pre_outputs
@@ -448,9 +482,11 @@ class NeuralLM:
         if X_dev is None:
             X_dev = X
         train_gen = generate_data(X, train_indexes_by_buckets, train_batches_indexes,
-                                  self.batch_size, self.symbols_number_)
+                                  self.batch_size, self.symbols_number_,
+                                  inputs_number=self.inputs_number, expand_outputs=False)
         val_gen = generate_data(X_dev, dev_indexes_by_buckets, dev_batches_indexes,
-                                self.batch_size, self.symbols_number_, shuffle=False)
+                                self.batch_size, self.symbols_number_, shuffle=False,
+                                inputs_number=self.inputs_number, expand_outputs=False)
         self.model_.fit_generator(
             train_gen, len(train_batches_indexes), epochs=self.nepochs,
             callbacks=self.callbacks, verbose=self.verbose, validation_data=val_gen,
@@ -475,6 +511,8 @@ class NeuralLM:
         # total = self.model.evaluate(bucket, answers, batch_size=batch_size)
         # last two scores are probabilities of word end and final padding symbol
         scores = self.model_.predict(bucket, batch_size=batch_size)
+        if self.use_cls_loss:
+            scores = scores[0]
         # answers_, scores_ = kb.constant(answers), kb.constant(scores)
         # losses = kb.eval(kb.categorical_crossentropy(answers_, scores_))
         scores = np.clip(scores, EPS, 1.0 - EPS)
@@ -510,7 +548,7 @@ class NeuralLM:
         answer = [None] * len(X)
         lengths = np.array([len(x[0]) + 1 for x in X])
         for j, curr_indexes in enumerate(indexes):
-            X_curr, y_curr = X_test[j][:fields_number], X_test[j][-1]
+            X_curr, y_curr = X_test[j][:fields_number], X_test[j][fields_number]
             letter_scores, total_scores = self._score_batch(
                 X_curr, y_curr, lengths[curr_indexes], batch_size=batch_size)
             if return_log_probs:
