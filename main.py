@@ -112,7 +112,7 @@ if __name__ == "__main__":
                     lm.train(data_for_lm, dev_data_for_lm, save_file=lm_file)
                 use_lm = True
             else:
-                use_lm = False
+                use_lm, lm_file = False, None
             inflector = Inflector(use_lm=use_lm, lm_file=lm_file, **params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
