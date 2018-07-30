@@ -13,7 +13,7 @@
     "decoder_dropout": 0.2,
     "encoder_rnn_dropout": 0.2,
     "lm_dropout": 0.2,
-    "use_decoder_gate": "step",
+    "use_decoder_gate": true,
     "features_after_decoder": false,
     "output_history": 4,
     "use_input_attention": false,

@@ -83,7 +83,7 @@ if __name__ == "__main__":
         print(language, mode)
         infile = os.path.join(corr_dir, "{}-train-{}".format(language, mode))
         test_file = os.path.join(corr_dir, "{}-dev".format(language))
-        data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
+        data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)[:10]
         data *= params.get("data_multiple", 1)
         dev_data = test_data[:]
         # data_for_alignment = [elem[:2] for elem in data]
@@ -94,6 +94,10 @@ if __name__ == "__main__":
         load_file = os.path.join(load_dir, filename + ".json") if load_dir is not None else None
         if load_file and os.path.exists(load_file):
             inflector = load_inflector(load_file, verbose=0)
+            for param in ["nepochs", "batch_size"]:
+                value = params["model"].get(param)
+                if value is not None:
+                    inflector.__setattr__(param, value)
         else:
             if params["use_lm"]:
                 lm_dir = params.get("lm_dir")
@@ -120,6 +124,9 @@ if __name__ == "__main__":
         if use_paradigms:
             paradigm_checker = ParadigmChecker().train(data)
         if to_test:
+            alignment_data = [elem[:2] for elem in data]
+            inflector.evaluate(test_data, alignment_data=alignment_data)
+            sys.exit()
             answer = inflector.predict(test_data, **params["predict"])
             if use_paradigms:
                 data_to_filter = [(elem[0], elem[2]) for elem in test_data]

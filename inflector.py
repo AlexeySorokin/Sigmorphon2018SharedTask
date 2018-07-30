@@ -585,7 +585,8 @@ class Inflector:
         return states
 
     def transform_training_data(self, lemmas, features, letter_positions,
-                                targets, words, auxiliary_targets=None):
+                                targets, words, auxiliary_targets=None,
+                                buckets_number=None, bucket_size=-1):
         """
 
         lemmas: list of strs,
@@ -597,11 +598,14 @@ class Inflector:
             список порождаемых словоформ (с учётом начала и конца строки)
 
         """
+        if buckets_number is None and bucket_size == -1:
+            buckets_number = self.buckets_number
         alignment_lengths = [max(len(lemma)+2, len(target))
                              for lemma, target in zip(lemmas, targets)]
         self.max_length_shift_ = max(0, max([len(target) - 2 * len(lemma)
                                              for lemma, target in zip(lemmas, targets)]))
-        buckets_with_indexes = collect_buckets(alignment_lengths, self.buckets_number)
+        buckets_with_indexes = collect_buckets(
+            alignment_lengths, buckets_number, max_bucket_length=bucket_size)
         data_by_buckets = [self._make_bucket_data(lemmas, length, indexes)
                            for length, indexes in buckets_with_indexes]
         features_by_buckets = [
@@ -650,7 +654,8 @@ class Inflector:
                 answer[i] += (elem[i],)
         return answer, [elem[1] for elem in buckets_with_indexes]
 
-    def _preprocess(self, data, alignments, to_fit=True, alignments_outfile=None):
+    def _preprocess(self, data, alignments, to_fit=True, alignments_outfile=None,
+                    buckets_number=None, bucket_size=-1):
         to_align = [(elem[0], elem[1]) for elem in data]
         if alignments is None:
             # вычисляем выравнивания
@@ -677,7 +682,8 @@ class Inflector:
         if self.reverse:
             lemmas = [x[::-1] for x in lemmas]
         return self.transform_training_data(lemmas, features, letter_indexes,
-                                            targets, words, auxiliary_letter_targets)
+                                            targets, words, auxiliary_letter_targets,
+                                            buckets_number=buckets_number, bucket_size=bucket_size)
 
     def train(self, data, alignments=None, dev_data=None, dev_alignments=None,
               alignments_outfile=None, save_file=None, model_file=None):
@@ -711,7 +717,7 @@ class Inflector:
             data, alignments, to_fit=True, alignments_outfile=alignments_outfile)
         if dev_data is not None:
             dev_data_by_buckets, dev_bucket_indexes =\
-                self._preprocess(dev_data, dev_alignments, to_fit=False)
+                self._preprocess(dev_data, dev_alignments, bucket_size=64, to_fit=False)
         else:
             dev_data_by_buckets, dev_bucket_indexes = None, None
         if not hasattr(self, "built_"):
@@ -978,10 +984,10 @@ class Inflector:
         if self.use_symbol_statistics:
             inputs.append(symbol_statistics_inputs)
         # буквы входного слова
-        tiled_feature_inputs = self._build_feature_network(
-            feature_inputs, kb.shape(aligned_symbol_outputs)[1])
         # to_concatenate = [aligned_symbol_outputs, tiled_feature_inputs]
         shifted_outputs = self._build_history_network(shifted_target_inputs, only_last=test)
+        tiled_feature_inputs = self._build_feature_network(
+            feature_inputs, kb.shape(shifted_outputs)[1])
         to_decoder = [aligned_symbol_outputs, tiled_feature_inputs, shifted_outputs]
         first_output, initial_decoder_states, final_decoder_states =\
             self._build_decoder_network(to_decoder, aligned_inputs, lm_inputs=lm_inputs)
@@ -1011,7 +1017,7 @@ class Inflector:
         if self.use_lm:
             decoder_inputs.append(lm_inputs)
         decoder = kb.function(decoder_inputs + initial_decoder_states + [kb.learning_phase()],
-                              [first_output] + final_decoder_states)
+                              decoder_inputs + [first_output] + final_decoder_states)
         return model, encoder, decoder
 
     def _prepare_for_prediction(self, words, features,
@@ -1301,19 +1307,6 @@ class Inflector:
         answer[2] = np.transpose(answer[2], axes=(1, 0, 2))
         return answer
 
-    def _predict_current_cell_output(self, *args):
-        answer = [[], [], []]
-        for i, decoder in enumerate(self.decoders_):
-            curr_args = [args[0][i]] + list(args[1:-2]) + [args[-2][:,i], args[-1][:,i]]
-            # моделируем вычисление декодера на одном из элементов
-            curr_answer = decoder.predict(curr_args)
-            for elem, to_append in zip(answer, curr_answer):
-                elem.append(to_append)
-        answer[0] = np.mean(answer[0], axis=0)
-        answer[1] = np.transpose(answer[1], axes=(1,0,2))
-        answer[2] = np.transpose(answer[2], axes=(1,0,2))
-        return answer
-
     def _zero_impossible_probs(self, curr_output, known_answers, are_steps_allowed):
         # если знаем символ, разрешаем только его и STEP_CODE
         M = curr_output.shape[0]
@@ -1365,6 +1358,50 @@ class Inflector:
         else:
             answer[1] = [x / np.log10(log_base) for x in probs_to_return]
         return answer
+
+    def evaluate(self, data, alignment_data):
+        m = len(data)
+        self.aligner.align(alignment_data, to_fit=True)
+        data_by_buckets, _ = self._preprocess(data, alignments=None, bucket_size=64, to_fit=False)
+        bucket_data = list(data_by_buckets[0])
+        data_to_evaluate, answer = bucket_data[:-1], bucket_data[-1]
+        encoded_data = self.encoders_[0](data_to_evaluate[:1] + [0])[0]
+        aligned_encoded_data = encoded_data[np.arange(m)[:,None], data_to_evaluate[2]]
+        aligned_source = data_to_evaluate[0][np.arange(m)[:,None], data_to_evaluate[2]]
+        shifted_targets = self._make_shifted_output(answer.shape[1], len(data), targets=answer)
+        to_decoder = [aligned_encoded_data, data_to_evaluate[1], shifted_targets, aligned_source]
+        states = [np.zeros(shape=(m, self.decoder_rnn_size), dtype=float),
+                  np.zeros(shape=(m, self.decoder_rnn_size), dtype=float)]
+        decoder_answers = []
+        for i in range(20):
+            # curr_features = np.repeat(np.array(data_to_evaluate[1])[:,None], i+1, axis=1)
+            curr_to_decoder = [aligned_encoded_data[:,:i+1], data_to_evaluate[1],
+                               shifted_targets[:, :i+1], aligned_source[:, :i+1]]
+            curr_predictions = self.decoders_[0](curr_to_decoder + states + [0])
+            decoder_answers.append(curr_predictions)
+            labels = np.argmax(curr_predictions[0], axis=-1)
+            print(np.sum(labels != answer[:, :i+1]).astype("int"), end=" ")
+        print("")
+        positions, histories = [0] * m, np.array([[1] for _ in range(m)])
+        for i in range(1):
+            curr_to_decoder = [encoded_data[np.arange(m),positions,None], data_to_evaluate[1],
+                               histories[:, :i+1], data_to_evaluate[0][:, :i+1]]
+            curr_predictions = self.decoders_[0](curr_to_decoder + states + [0])
+            for x, y in zip(decoder_answers[i], curr_predictions):
+                if x.ndim > 2:
+                    x = x[:, i:i+1]
+                print(np.max(np.abs(x[:, i:i+1] - y)))
+        # predictions = self.decoders_[0](to_decoder + states + [0])[0]
+        # shifted_targets = self._model_funcs[0](data_to_evaluate + [0])[:1]
+        # self.rebuild_test()
+        # test_shifted_targets = self._make_shifted_output(answer.shape[1], len(data), targets=answer)
+        # print(shifted_targets.shape, test_shifted_targets.shape)
+        # diff = np.max(np.abs(shifted_targets[:,0]-test_shifted_targets[:,:1]))
+        # for i, elem in enumerate(diff):
+        #     print(i, "{:.8f}".format(elem))
+        # labels = np.argmax(predictions, axis=-1)
+        # print(np.sum(labels != answer).astype("int"))
+        return
 
     # def test_prediction(self, data, alignments=None):
     #     # as for now, we cannot load aligner, therefore have to train it

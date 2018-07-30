@@ -1,4 +1,5 @@
-from keras.models import Layer, Model
+from keras.models import Model
+from keras.engine import Layer
 
 import keras.layers as kl
 import keras.backend as kb
