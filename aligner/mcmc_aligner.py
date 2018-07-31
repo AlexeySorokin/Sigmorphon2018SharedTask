@@ -180,7 +180,7 @@ class Aligner:
 
     @property
     def offset(self):
-        return self.symbols_number + 1
+        return self.symbols_number
 
     def _make_initial(self, X):
         func = self._make_lcs_initial if self.init == "lcs" else self._make_greedy_initial
@@ -241,7 +241,7 @@ class Aligner:
         if code < len(self.symbols_):
             return self.symbols_[code]
         else:
-            return self._tmp_symbols[code-self.output_symbols_number] # -1 для окончаний
+            return self._tmp_symbols[code-self.symbols_number] # -1 для окончаний
 
     def _encode_alignment(self, alignment):
         """
@@ -269,7 +269,7 @@ class Aligner:
         answer = [None] * len(alignment)
         for i, (x, y) in enumerate(alignment):
             if self.separate_endings:
-                if y > self.symbols_number and y < self.symbols_number + self.offset:
+                if y >= self.offset and y < self.symbols_number + self.offset:
                     y -= self.offset # -1
             answer[i] = (self.decode(x), self.decode(y))
         return answer
@@ -303,9 +303,9 @@ class Aligner:
         self._tmp_symbols, self._tmp_encoding = [], dict()
         X_encoded = [(self.encode(first), self.encode(second)) for first, second in X]
         if to_fit:
-            initial = [self._encode_alignment(elem) for elem in initial]
+            initial_ = [self._encode_alignment(elem) for elem in initial]
             n_iter = 0 if only_initial else -1
-            self._aligner.fit(X_encoded, initial, self.symbols_number, set(word_indexes), n_iter)
+            self._aligner.fit(X_encoded, initial_, self.symbols_number, set(word_indexes), n_iter)
         answer = self._aligner.predict(X_encoded, set(word_indexes))
         answer = [self._decode_alignment(elem) for elem in answer]
         return answer

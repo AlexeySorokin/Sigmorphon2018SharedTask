@@ -10,16 +10,18 @@ from keras.engine.topology import InputSpec
 from keras.initializers import Constant
 from keras.callbacks import Callback, ProgbarLogger
 
-from .common import BEGIN
+from .common import BEGIN, PAD
 
 def _useful_symbols_mask_func(X, dtype):
     """
-    возвращает маску, содержащую нули на месте нулей, идущих до содержательных символов
+    возвращает маску, содержащую нули на месте нулей, идущих до содержательных символов,
+    а также на месте PAD в конце
     """
-    X = kb.cast(kb.not_equal(X, 0), dtype="int32")
-    X_max = kb.max(X, axis=1)[:,None]
-    X, X_max = kb.cast(X, "int32"), kb.cast(X_max, "int32")
-    return kb.cast(kb.greater_equal(kb.cumsum(X, axis=1), X_max), dtype=dtype)
+    # X = kb.cast(kb.not_equal(X, 0), dtype="int32")
+    # X_max = kb.max(X, axis=1)[:,None]
+    # X, X_max = kb.cast(X, "int32"), kb.cast(X_max, "int32")
+    # return kb.cast(kb.greater_equal(kb.cumsum(X, axis=1), X_max), dtype=dtype)
+    return kb.cast(kb.not_equal(X, PAD), dtype=dtype)
 
 def make_useful_symbols_mask(X, dtype=bool):
     return kl.Lambda(_useful_symbols_mask_func, arguments={"dtype": dtype})(X)

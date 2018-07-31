@@ -70,7 +70,7 @@ def collect_buckets(lengths, buckets_number=None, max_bucket_length=-1):
             in zip(bucket_lengths, indexes) if len(curr_indexes) > 0]
 
 
-def make_table(data, length, indexes, fill_value=None, fill_with_last=False):
+def make_table(data, indexes, fill_value=None, fill_with_last=False):
     """
     Погружает строки data с номерами из indexes
     в таблицу ширины length, дополняя их справа
@@ -80,6 +80,7 @@ def make_table(data, length, indexes, fill_value=None, fill_with_last=False):
     length: int
     indexes: list of ints
     """
+    length = max(len(data[i]) for i in indexes)
     answer = np.zeros(shape=(len(indexes), length), dtype=int)
     if fill_value is not None:
         answer.fill(fill_value)

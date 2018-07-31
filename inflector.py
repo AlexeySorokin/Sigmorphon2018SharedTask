@@ -211,7 +211,7 @@ def load_inflector(infile, verbose=1):
         if key in json_data:
             args['callbacks'].append(cls(**json_data[key]))
     # создаём языковую модель
-    args['slow'] = True
+    args['slow'] = False
     inflector = Inflector(**args)
     # обучаемые параметры
     args = {key: value for key, value in json_data.items() if key[-1] == "_"}
@@ -238,7 +238,7 @@ class Inflector:
                               "init": "lcs", "separate_endings": True, "verbose": 0}
     MAX_STEPS_NUMBER = 3
 
-    def __init__(self, slow=False, mask=False,
+    def __init__(self, slow=True, mask=True,
                  aligner_params=None, use_full_tags=False,
                  models_number=1, buckets_number=10, batch_size=32,
                  nepochs=25, validation_split=0.2, reverse=False,
@@ -494,8 +494,9 @@ class Inflector:
                 answer[len(self.labels_) + code] = 1
         return answer
 
-    def _make_bucket_data(self, lemmas, bucket_length, bucket_indexes):
+    def _make_bucket_data(self, lemmas, bucket_indexes):
         bucket_size = len(bucket_indexes)
+        bucket_length = max(len(x) + 3 for x in lemmas)
         bucket_data = np.full(shape=(bucket_size, bucket_length),
                               fill_value=PAD, dtype=int)
         # заполняем закодированными символами
@@ -527,6 +528,7 @@ class Inflector:
         answer = np.full(shape=(bucket_size, bucket_length), fill_value=BEGIN, dtype=int)
         if targets is not None:
             answer[:,1:] = targets[:, :-1]
+        # answer = np.concatenate([np.ones_like(targets[:,:1]) * BEGIN, targets[:,:-1]], axis=1)
         return answer
 
     def _make_steps_shifted_output(self, bucket_length, bucket_size, targets=None):
@@ -608,20 +610,20 @@ class Inflector:
         """
         if buckets_number is None and bucket_size == -1:
             buckets_number = self.buckets_number
-        alignment_lengths = [max(len(lemma)+2, len(target))
-                             for lemma, target in zip(lemmas, targets)]
-        self.max_length_shift_ = max(0, max([len(target) - 2 * len(lemma)
-                                             for lemma, target in zip(lemmas, targets)]))
+        lemmas_lengths = [len(lemma)+2 for lemma in lemmas]
+        alignment_lengths = [len(target) for target in targets]
+        self.max_length_shift_ = max(
+            0, max(y - 2*x for x, y in zip(lemmas_lengths, alignment_lengths)))
         buckets_with_indexes = collect_buckets(
-            alignment_lengths, buckets_number, max_bucket_length=bucket_size)
-        data_by_buckets = [self._make_bucket_data(lemmas, length, indexes)
+            lemmas_lengths, buckets_number, max_bucket_length=bucket_size)
+        data_by_buckets = [self._make_bucket_data(lemmas, indexes)
                            for length, indexes in buckets_with_indexes]
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
         targets = np.array([[self.symbol_codes_.get(x, UNKNOWN) for x in elem] for elem in targets])
         letter_positions_by_buckets = [
-            make_table(letter_positions, length, indexes, fill_with_last=True)
+            make_table(letter_positions, indexes, fill_with_last=True)
             for length, indexes in buckets_with_indexes]
         if self.use_symbol_statistics:
             symbol_data_by_buckets = [self._extract_symbol_data(bucket) for bucket in data_by_buckets]
@@ -633,23 +635,23 @@ class Inflector:
                 curr_positions_in_target = np.arange(curr_positions.shape[1])[None,:] - curr_positions
                 curr_lm_data = self._make_lm_data(curr_data, curr_positions_in_target)
                 lm_data_by_buckets.append(curr_lm_data)
-        targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
+        targets_by_buckets = [make_table(targets, indexes, fill_value=PAD)
                               for length, indexes in buckets_with_indexes]
-        history_targets_by_buckets = [make_table(targets, length, indexes, fill_value=PAD)
-                                      for length, indexes in buckets_with_indexes]
         if auxiliary_targets is not None:
             fill_values = [elem == "identity" for elem in self.auxiliary_targets]
             auxiliary_targets_by_buckets = []
             for i, elem in enumerate(auxiliary_targets):
                 auxiliary_targets_by_buckets.append(
-                    [make_table(elem, length, indexes, fill_value=fill_values[i])
+                    [make_table(elem, indexes, fill_value=fill_values[i])
                      for length, indexes in buckets_with_indexes])
         else:
             auxiliary_targets_by_buckets = []
-        def _make_bucket_data(func):
-            return [func(L, len(indexes), table) for table, (L, indexes)
-                    in zip(history_targets_by_buckets, buckets_with_indexes)]
-        history_by_buckets = _make_bucket_data(self._make_shifted_output)
+        alignment_length_by_buckets = [max(len(letter_positions[i]) for i in indexes)
+                                       for _, indexes in buckets_with_indexes]
+        for_bucket_data = [(L, indexes) for L, (_, indexes) in zip(
+                                alignment_length_by_buckets, buckets_with_indexes)]
+        history_by_buckets = [self._make_shifted_output(L, len(indexes), elem)
+                              for elem, (L, indexes) in zip(targets_by_buckets, for_bucket_data)]
         answer = list(zip(data_by_buckets, features_by_buckets,
                           letter_positions_by_buckets, history_by_buckets))
         for i in range(len(answer)):
@@ -814,8 +816,6 @@ class Inflector:
         return self
 
     def _build_word_network(self, inputs, feature_inputs, stats_inputs=None):
-        if self.mask:
-            inputs = kl.Masking(PAD)(inputs)
         if self.use_embeddings:
             embedding = kl.Embedding(self.symbols_number, self.embeddings_size, mask_zero=True)
         else:
@@ -1040,7 +1040,7 @@ class Inflector:
         encoded_words = np.array(
             [([BEGIN] + [self.symbol_codes_.get(
                 x, UNKNOWN) for x in word] + [END]) for word in words])
-        encoded_words_by_buckets = [make_table(encoded_words, length, indexes, fill_value=PAD)
+        encoded_words_by_buckets = [make_table(encoded_words, indexes, fill_value=PAD)
                                     for length, indexes in buckets_with_indexes]
         # представления входных слов после lstm
         # encoder_outputs_by_buckets[i].shape = (self.models, lengths[i])
@@ -1063,7 +1063,7 @@ class Inflector:
                                          [self.symbol_codes_.get(x, UNKNOWN) for x in word] +
                                          [END]) for word in known_answers])
             encoded_answers_by_buckets = [
-                make_table(encoded_answers, length, indexes, fill_value=PAD)
+                make_table(encoded_answers, indexes, fill_value=PAD)
                 for length, indexes in buckets_with_indexes]
         else:
             encoded_answers_by_buckets = [None] * len(buckets_with_indexes)
@@ -1088,8 +1088,8 @@ class Inflector:
         if not getattr(self, "built_", "") == "test":
             self.rebuild_test()
         words, features = [elem[0] for elem in data], [elem[feat_column] for elem in data]
-        # output_lengths = [(2 * len(x) + self.max_length_shift_ - 3) for x in words]
-        output_lengths = [2*len(x)+2 for x in words]
+        # output_lengths = [30 for x in words]
+        output_lengths = [12 for x in words]
         # output_lengths = [30 for x in words]
         buckets_with_indexes = collect_buckets(output_lengths, max_bucket_length=64)
         inputs, encoded_answers_by_buckets =\
@@ -1145,7 +1145,10 @@ class Inflector:
         :return:
         """
         beam_growth = beam_growth or beam_width
-        _, m, L, H = symbols.shape
+        _, m, max_length, H = symbols.shape
+        L = 2 * max_length + self.max_length_shift_ + 3
+        target_history = np.concatenate(
+            [target_history, np.zeros(shape=(m, L - target_history.shape[1]) + target_history.shape[2:])], axis=1)
         M = m * beam_width
         # positions[j] --- текущая позиция в symbols[j]
         positions = np.zeros(shape=(M,), dtype=int)
@@ -1332,7 +1335,7 @@ class Inflector:
         _, m, max_length, H = symbols.shape
         L = 2 * max_length + self.max_length_shift_ + 3
         target_history = np.concatenate(
-            [target_history, np.zeros(shape=(m, L-max_length) + target_history.shape[2:])], axis=1)
+            [target_history, np.zeros(shape=(m, L-target_history.shape[1]) + target_history.shape[2:])], axis=1)
         M = m * beam_width
         # positions[j] --- текущая позиция в symbols[j]
         positions = np.zeros(shape=(M,), dtype=int)
@@ -1594,12 +1597,13 @@ class Inflector:
         states = [np.zeros(shape=(m, self.decoder_rnn_size), dtype=float),
                   np.zeros(shape=(m, self.decoder_rnn_size), dtype=float)]
         decoder_answers = []
+        # predictions = self.models_[0].predict(data_to_evaluate)
         predictions = self.func(data_to_evaluate + [0])
         labels = np.argmax(predictions[0], axis=-1)
         for i in range(25):
             diff = (labels[:,:i+1] != answer[:, :i+1]).astype("int")
             print(",".join(str(x) for x in np.max(diff, axis=-1)))
-        return
+        print("")
         # for i in range(25):
         #     # curr_features = np.repeat(np.array(data_to_evaluate[1])[:,None], i+1, axis=1)
         #     curr_to_decoder = [aligned_encoded_data[:,:i+1], data_to_evaluate[1],
@@ -1609,22 +1613,27 @@ class Inflector:
         #     labels = np.argmax(curr_predictions[0], axis=-1)
         #     diff = (labels != answer[:, :i+1]).astype("int")
         #     x = 2
+        #
         #     print(",".join(str(x) for x in np.max(diff, axis=1)))
-        #     for j, (elem, curr_elem) in enumerate(zip(predictions[1:], curr_to_decoder)):
+        #
+        #     for j, (elem, curr_elem) in enumerate(zip(predictions[2:], curr_to_decoder)):
         #         if j != 1:
         #             elem = elem[:,:i+1]
         #         diff = (elem != curr_elem).astype("int")
         #         axis = tuple(np.arange(1, diff.ndim))
         #         print(",".join(str(x) for x in np.max(diff, axis=axis)))
         #     print("")
+        # return
         # # print(labels[:,-1])
         # # print(answer[:,i])
         # print("")
         self.predict(data)
-        print(np.max(np.abs(data_to_evaluate[0] - self._dump[0][:,:encoded_data.shape[1]])))
+        m = min(data_to_evaluate[0].shape[1], self._dump[0].shape[1])
+        print(np.max(np.abs(data_to_evaluate[0][:,:m] - self._dump[0][:,:m])))
         print(np.max(np.abs(data_to_evaluate[1] - self._dump[1])))
-        print(np.max(np.abs(encoded_data - self._dump[2][0,:,:encoded_data.shape[1]])))
-        for i in range(20):
+        m = min(encoded_data.shape[1], self._dump[2].shape[2])
+        print(np.max(np.abs(encoded_data[:,:m] - self._dump[2][0,:,:m])))
+        for i in range(12):
             args, curr_predictions = self._dump[i+3]
             labels = np.argmax(curr_predictions[:,-1], axis=-1)
             diff = (labels != answer[:, i]).astype("int")

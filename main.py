@@ -125,7 +125,7 @@ if __name__ == "__main__":
             paradigm_checker = ParadigmChecker().train(data)
         if to_test:
             alignment_data = [elem[:2] for elem in data]
-            inflector.evaluate(test_data[:20], alignment_data=alignment_data)
+            # inflector.evaluate(test_data[:20], alignment_data=alignment_data)
             # sys.exit()
             answer = inflector.predict(test_data, **params["predict"])
             # if use_paradigms:
@@ -141,12 +141,12 @@ if __name__ == "__main__":
             #             for prediction in predictions:
             #                 fout.write("{}\t{}\t{}\t{:.2f}\n".format(
             #                     word, ";".join(descr), prediction[0], 100 * prediction[2]))
-            # pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
-            # if pred_file is not None:
-            #     with open(pred_file, "w", encoding="utf8") as fout:
-            #         for source, predictions in zip(test_data, answer):
-            #             predicted_words = [elem[0] for elem in predictions]
-            #             fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
+            pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
+            if pred_file is not None:
+                with open(pred_file, "w", encoding="utf8") as fout:
+                    for source, predictions in zip(test_data, answer):
+                        predicted_words = [elem[0] for elem in predictions]
+                        fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
             if to_evaluate:
                 answer_to_evaluate = [(word, [x[0] for x in elem], feats)
                                       for (word, _, feats), elem in zip(test_data, answer)]
