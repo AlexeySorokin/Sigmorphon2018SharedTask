@@ -238,8 +238,7 @@ class Inflector:
                               "init": "lcs", "separate_endings": True, "verbose": 0}
     MAX_STEPS_NUMBER = 3
 
-    def __init__(self, slow=True, mask=True,
-                 aligner_params=None, use_full_tags=False,
+    def __init__(self, slow=False, aligner_params=None, use_full_tags=False,
                  models_number=1, buckets_number=10, batch_size=32,
                  nepochs=25, validation_split=0.2, reverse=False,
                  use_lm=False, lm_file=None,
@@ -264,7 +263,6 @@ class Inflector:
                  min_prob=0.01, max_diff=2.0,
                  random_state=187, verbose=1):
         self.slow = slow
-        self.mask = mask
         self.use_full_tags = use_full_tags
         self.models_number = models_number
         self.buckets_number = buckets_number
@@ -888,8 +886,7 @@ class Inflector:
     def _build_history_network(self, inputs, only_last=False):
         if self.use_output_embeddings:
             inputs = kl.Lambda(kb.cast, arguments={"dtype": "float32"})(inputs)
-            outputs = kl.Embedding(self.symbols_number, self.output_embeddings_size,
-                                   mask_zero=self.mask)(inputs)
+            outputs = kl.Embedding(self.symbols_number, self.output_embeddings_size)(inputs)
         else:
             outputs = kl.Lambda(kb.one_hot, arguments={"num_classes": self.symbols_number},
                                 output_shape=(None, self.symbols_number))(inputs)

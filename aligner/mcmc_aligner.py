@@ -241,7 +241,7 @@ class Aligner:
         if code < len(self.symbols_):
             return self.symbols_[code]
         else:
-            return self._tmp_symbols[code-self.symbols_number] # -1 для окончаний
+            return self._tmp_symbols[code-self.output_symbols_number] # -1 для окончаний
 
     def _encode_alignment(self, alignment):
         """
