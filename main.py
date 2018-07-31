@@ -117,6 +117,7 @@ if __name__ == "__main__":
                 use_lm = True
             else:
                 use_lm, lm_file = False, None
+            print(use_lm)
             inflector = Inflector(use_lm=use_lm, lm_file=lm_file, **params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
@@ -134,7 +135,7 @@ if __name__ == "__main__":
             #     probs_in_answer = [[x[1:] for x in elem]for elem in answer]
             #     answer = paradigm_checker.filter(data_to_filter, words_in_answer, probs_in_answer)
             # outfile = os.path.join(analysis_dir, filename) if analysis_dir is not None else None
-            # if outfile is not None:
+            # if outfile is not None:-
             #     with open(outfile, "w", encoding="utf8") as fout:
             #         for source, predictions in zip(test_data, answer):
             #             word, descr = source[0], source[2]
