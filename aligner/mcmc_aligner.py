@@ -178,6 +178,10 @@ class Aligner:
     def output_symbols_number(self):
         return len(self.symbols_) * (int(self.separate_endings) + 1)
 
+    @property
+    def offset(self):
+        return self.symbols_number + 1
+
     def _make_initial(self, X):
         func = self._make_lcs_initial if self.init == "lcs" else self._make_greedy_initial
         return func(X)
@@ -237,7 +241,7 @@ class Aligner:
         if code < len(self.symbols_):
             return self.symbols_[code]
         else:
-            return self._tmp_symbols[code-self.output_symbols_number]
+            return self._tmp_symbols[code-self.output_symbols_number] # -1 для окончаний
 
     def _encode_alignment(self, alignment):
         """
@@ -247,7 +251,7 @@ class Aligner:
         :return:
         """
         # к символам окончания прибавляем смещение
-        offset = self.symbols_number if self.separate_endings else 0
+        offset = self.offset if self.separate_endings else 0 # +1
         answer = [None] * len(alignment)
         for i, (x, y) in enumerate(alignment[::-1], 1):
             if x == y:
@@ -264,8 +268,9 @@ class Aligner:
         """
         answer = [None] * len(alignment)
         for i, (x, y) in enumerate(alignment):
-            if y >= self.symbols_number and y < self.output_symbols_number:
-                y -= self.symbols_number
+            if self.separate_endings:
+                if y > self.symbols_number and y < self.symbols_number + self.offset:
+                    y -= self.offset # -1
             answer[i] = (self.decode(x), self.decode(y))
         return answer
 
@@ -300,7 +305,7 @@ class Aligner:
         if to_fit:
             initial = [self._encode_alignment(elem) for elem in initial]
             n_iter = 0 if only_initial else -1
-            self._aligner.fit(X_encoded, initial, set(word_indexes), n_iter)
+            self._aligner.fit(X_encoded, initial, self.symbols_number, set(word_indexes), n_iter)
         answer = self._aligner.predict(X_encoded, set(word_indexes))
         answer = [self._decode_alignment(elem) for elem in answer]
         return answer

@@ -369,7 +369,7 @@ cdef class CythonAlignerImpl:
         return path[::-1]
 
     # @cython.profile
-    def fit(self, list X, list pairs, set indexes_to_print=None, int n_iter=-1):
+    def fit(self, list X, list pairs, int max_code, set indexes_to_print=None, int n_iter=-1):
         cdef int i, j, index, pair_code, x, y, k, l
         cdef double t1, t2
         cdef np.ndarray[int,ndim=1] first, second
@@ -383,10 +383,10 @@ cdef class CythonAlignerImpl:
             n_iter = self.n_iter
         if indexes_to_print is None:
             indexes_to_print = set()
-        for pair in X:
-            self.max_code = max(max(pair[0]), self.max_code)
-            self.max_code = max(max(pair[1]), self.max_code)
-        self.max_code += 1
+        # for pair in X:
+        #     self.max_code = max(max(pair[0]), self.max_code)
+        #     self.max_code = max(max(pair[1]), self.max_code)
+        self.max_code = max_code
         # add 1 for unknown symbol
         self.codes_number = self.max_code * (int(self.separate_endings) + 1) + 1
         self.counts = np.zeros(dtype=np.float, shape=((self.max_code+1)*self.codes_number,))
