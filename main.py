@@ -83,7 +83,7 @@ if __name__ == "__main__":
         print(language, mode)
         infile = os.path.join(corr_dir, "{}-train-{}".format(language, mode))
         test_file = os.path.join(corr_dir, "{}-dev".format(language))
-        data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)[:10]
+        data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
         data *= params.get("data_multiple", 1)
         dev_data = test_data[:]
         # data_for_alignment = [elem[:2] for elem in data]
@@ -125,28 +125,28 @@ if __name__ == "__main__":
             paradigm_checker = ParadigmChecker().train(data)
         if to_test:
             alignment_data = [elem[:2] for elem in data]
-            inflector.evaluate(test_data, alignment_data=alignment_data)
-            sys.exit()
+            inflector.evaluate(test_data[:20], alignment_data=alignment_data)
+            # sys.exit()
             answer = inflector.predict(test_data, **params["predict"])
-            if use_paradigms:
-                data_to_filter = [(elem[0], elem[2]) for elem in test_data]
-                words_in_answer  = [[x[0] for x in elem] for elem in answer]
-                probs_in_answer = [[x[1:] for x in elem]for elem in answer]
-                answer = paradigm_checker.filter(data_to_filter, words_in_answer, probs_in_answer)
-            outfile = os.path.join(analysis_dir, filename) if analysis_dir is not None else None
-            if outfile is not None:
-                with open(outfile, "w", encoding="utf8") as fout:
-                    for source, predictions in zip(test_data, answer):
-                        word, descr = source[0], source[2]
-                        for prediction in predictions:
-                            fout.write("{}\t{}\t{}\t{:.2f}\n".format(
-                                word, ";".join(descr), prediction[0], 100 * prediction[2]))
-            pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
-            if pred_file is not None:
-                with open(pred_file, "w", encoding="utf8") as fout:
-                    for source, predictions in zip(test_data, answer):
-                        predicted_words = [elem[0] for elem in predictions]
-                        fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
+            # if use_paradigms:
+            #     data_to_filter = [(elem[0], elem[2]) for elem in test_data]
+            #     words_in_answer  = [[x[0] for x in elem] for elem in answer]
+            #     probs_in_answer = [[x[1:] for x in elem]for elem in answer]
+            #     answer = paradigm_checker.filter(data_to_filter, words_in_answer, probs_in_answer)
+            # outfile = os.path.join(analysis_dir, filename) if analysis_dir is not None else None
+            # if outfile is not None:
+            #     with open(outfile, "w", encoding="utf8") as fout:
+            #         for source, predictions in zip(test_data, answer):
+            #             word, descr = source[0], source[2]
+            #             for prediction in predictions:
+            #                 fout.write("{}\t{}\t{}\t{:.2f}\n".format(
+            #                     word, ";".join(descr), prediction[0], 100 * prediction[2]))
+            # pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
+            # if pred_file is not None:
+            #     with open(pred_file, "w", encoding="utf8") as fout:
+            #         for source, predictions in zip(test_data, answer):
+            #             predicted_words = [elem[0] for elem in predictions]
+            #             fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
             if to_evaluate:
                 answer_to_evaluate = [(word, [x[0] for x in elem], feats)
                                       for (word, _, feats), elem in zip(test_data, answer)]
