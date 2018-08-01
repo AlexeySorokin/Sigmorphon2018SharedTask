@@ -971,7 +971,7 @@ class Inflector:
         shifted_target_inputs = kl.Input(
             shape=(None,), name="shifted_target_inputs", dtype='int32')
         if self.use_lm:
-            lm_inputs = kl.Input(shape=(None, self.lm_state_dim), dtype="float32")
+            lm_inputs = kl.Input(shape=(None, self.lm_state_dim), name="lm_inputs", dtype="float32")
         else:
             lm_inputs = None
         if self.use_symbol_statistics:
