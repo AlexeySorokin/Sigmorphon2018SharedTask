@@ -202,7 +202,8 @@ def load_inflector(infile, verbose=1):
     with open(infile, "r", encoding="utf8") as fin:
         json_data = json.load(fin)
     args = {key: value for key, value in json_data.items()
-            if not (key.endswith("_") or key.endswith("callback") or key == "model_files")}
+            if not (key.endswith("_") or key.endswith("callback")
+                    or key == "model_files" or key == "mask")}
     args['verbose'] = verbose
     # коллбэки
     args['callbacks'] = []
@@ -1145,7 +1146,10 @@ class Inflector:
         _, m, max_length, H = symbols.shape
         L = 2 * max_length + self.max_length_shift_ + 3
         target_history = np.concatenate(
-            [target_history, np.zeros(shape=(m, L - target_history.shape[1]) + target_history.shape[2:])], axis=1)
+            [target_history, np.zeros(shape=(m, max(L - target_history.shape[1], 0)) + target_history.shape[2:])], axis=1)
+        if known_answers is not None:
+            known_answers = np.concatenate(
+                [known_answers, np.zeros(shape=(m, max(L - known_answers.shape[1], 0)) + known_answers.shape[2:], dtype=int)], axis=1)
         M = m * beam_width
         # positions[j] --- текущая позиция в symbols[j]
         positions = np.zeros(shape=(M,), dtype=int)
@@ -1332,7 +1336,7 @@ class Inflector:
         _, m, max_length, H = symbols.shape
         L = 2 * max_length + self.max_length_shift_ + 3
         target_history = np.concatenate(
-            [target_history, np.zeros(shape=(m, L-target_history.shape[1]) + target_history.shape[2:])], axis=1)
+            [target_history, np.zeros(shape=(m, max(L - target_history.shape[1], 0)) + target_history.shape[2:])], axis=1)
         M = m * beam_width
         # positions[j] --- текущая позиция в symbols[j]
         positions = np.zeros(shape=(M,), dtype=int)
@@ -1340,7 +1344,7 @@ class Inflector:
         if known_answers is not None:
             current_steps_number = np.zeros(shape=(M,), dtype=int)
             known_answers = np.repeat(known_answers, beam_width, axis=0)
-            allowed_steps_number = max_length - np.count_nonzero(known_answers, axis=1) - 1
+            allowed_steps_number = L - np.count_nonzero(known_answers, axis=1) - 1
         words, probs = [[] for _ in range(M)], [[] for _ in range(M)]
         partial_scores = np.zeros(shape=(M,), dtype=float)
         is_active, active_count = np.zeros(dtype=bool, shape=(M,)), m

@@ -17,7 +17,7 @@ cls_config = {"tune_weights": False, "use_paradigm_counts": False, "verbose": 0}
 languages = ["kurmanji"]
 modes = ["high"] * 1
 
-SHORT_OPTS = "M:m:sgl:p:"
+SHORT_OPTS = "M:m:sgl:p:t"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -27,7 +27,7 @@ if __name__ == "__main__":
     metrics = []
     use_model, model_dir, model_name, use_model_scores = False, None, None, True
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
-    language_file, test_data_dir, to_generate_patterns = None, "conll2018/task1/all", False
+    language_file, test_data_dir, to_generate_patterns, tune_weights = None, "conll2018/task1/all", False, False
     predictions_dir = None
     for opt, val in opts:
         if opt == "-M":
@@ -42,6 +42,8 @@ if __name__ == "__main__":
             language_file = val
         elif opt == "-p":
             predictions_dir = val
+        elif opt == "-t":
+            tune_weights = True
     if language_file is not None:
         languages = read_languages_infile(language_file)
     else:
@@ -68,6 +70,7 @@ if __name__ == "__main__":
         reverse_lm = load_lm(reverse_save_file) if os.path.exists(reverse_save_file) else None
         cls = ParadigmLmClassifier(basic_model=basic_model, use_basic_scores=use_model_scores,
                                    to_generate_patterns=to_generate_patterns,
+                                   tune_weights=tune_weights,
                                    forward_lm=forward_lm, reverse_lm=reverse_lm, **cls_config)
         cls.train(data, dev_data, save_forward_lm=forward_save_file, save_reverse_lm=reverse_save_file)
         data_to_predict = [(x[0], x[2]) for x in dev_data]

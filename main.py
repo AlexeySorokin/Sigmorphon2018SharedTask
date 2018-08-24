@@ -9,8 +9,8 @@ import keras.backend.tensorflow_backend as kbt
 
 from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector, predict_missed_answers
-from neural.neural_LM import NeuralLM
-from paradigm_classifier import ParadigmChecker
+from neural.neural_LM import NeuralLM, load_lm
+from paradigm_classifier import ParadigmChecker, LmRanker
 from evaluate import evaluate, prettify_metrics
 from write import output_analysis
 
@@ -27,7 +27,7 @@ def read_params(infile):
     return params
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-SHORT_OPTS = "l:o:S:L:m:tTP:pC:eE:"
+SHORT_OPTS = "l:o:S:L:m:tTP:pC:eE:r:"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -40,7 +40,7 @@ if __name__ == "__main__":
     analysis_dir, pred_dir, to_evaluate, eval_outfile = "results", "predictions", False, None
     to_train, to_test = True, True
     predict_dir, to_predict = None, False
-    use_paradigms, use_lm = False, False
+    use_paradigms, use_lm, rerank_with_lm = False, False, ""
     lm_config_path = None
     for opt, val in opts:
         if opt == "-l":
@@ -71,6 +71,8 @@ if __name__ == "__main__":
             to_evaluate = True
         elif opt == "-E":
             eval_outfile = val
+        elif opt == "-r":
+            rerank_with_lm = val
     if languages is None:
         languages = [elem.rsplit("-", maxsplit=2) for elem in os.listdir(corr_dir)]
         languages = [(elem[0], elem[2]) for elem in languages if elem[1] == "train" and len(elem) >= 3]
@@ -117,13 +119,18 @@ if __name__ == "__main__":
                 use_lm = True
             else:
                 use_lm, lm_file = False, None
-            print(use_lm)
             inflector = Inflector(use_lm=use_lm, lm_file=lm_file, **params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
             inflector.train(data, dev_data=dev_data, save_file=save_file)
         if use_paradigms:
             paradigm_checker = ParadigmChecker().train(data)
+        if rerank_with_lm:
+            forward_save_file = "language_models/{}-{}.json".format(language, mode)
+            forward_lm = load_lm(forward_save_file) if os.path.exists(forward_save_file) else None
+            reverse_save_file = "language_models/reverse-{}-{}.json".format(language, mode)
+            reverse_lm = load_lm(reverse_save_file) if os.path.exists(reverse_save_file) else None
+            lm_ranker = LmRanker(forward_lm, reverse_lm, to_rerank=(rerank_with_lm == "rerank"))
         if to_test:
             alignment_data = [elem[:2] for elem in data]
             # inflector.evaluate(test_data[:20], alignment_data=alignment_data)
@@ -143,6 +150,20 @@ if __name__ == "__main__":
             #                 fout.write("{}\t{}\t{}\t{:.2f}\n".format(
             #                     word, ";".join(descr), prediction[0], 100 * prediction[2]))
             pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
+            if rerank_with_lm:
+                data_for_reranking = [([x[0] for x in predictions], source[2])
+                                       for source, predictions in zip(test_data, answer)]
+                reranked_predictions = lm_ranker.rerank(data_for_reranking)
+                new_answer = []
+                for elem, filtered_words in zip(answer, reranked_predictions):
+                    new_elem = []
+                    for word in filtered_words:
+                        for prediction in elem:
+                            if prediction[0] == word:
+                                new_elem.append(prediction)
+                                break
+                    new_answer.append(new_elem)
+                answer = new_answer
             if pred_file is not None:
                 with open(pred_file, "w", encoding="utf8") as fout:
                     for source, predictions in zip(test_data, answer):

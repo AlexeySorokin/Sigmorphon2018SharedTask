@@ -179,7 +179,7 @@ class ParadigmLmClassifier:
             self.reverse_lm = NeuralLM(reverse=True, verbose=self.verbose, **self.lm_params).train(
                 data_for_lm, dev_data_for_lm, save_file=save_reverse_lm)
         if self.tune_weights:
-            X_tune, y_tune = self._generate_data_for_tuning(dev_data)
+            X_tune, y_tune = self._generate_data_for_tuning_new(dev_data)
             self.cls = LogisticRegression().fit(X_tune, y_tune)
             self.weights = self.cls.coef_[0]
             self.weights /= np.linalg.norm(self.weights) / 3
@@ -339,7 +339,10 @@ class ParadigmLmClassifier:
         new_basic_predictions = self.basic_model.predict(
             new_data_for_basic, known_answers=new_forms_for_basic, **basic_model_params)
         for (i, j), elem in zip(indexes_for_basic, new_basic_predictions):
-            scores[i][j, 0] = self._transform_basic_score(elem[0])
+            try:
+                scores[i][j, 0] = self._transform_basic_score(elem[0])
+            except IndexError:
+                scores[i][j, 0] = np.inf
         new_lm_scores = self._collect_lm_scores(new_data_for_lm)
         for (i, j), elem in zip(indexes_for_lm, new_lm_scores):
             scores[i][j, 1:] = elem
@@ -351,8 +354,122 @@ class ParadigmLmClassifier:
         scores = np.dot(scores, self.weights)
         return self._predict_forms(scores, group_forms, indexes, n=n, min_prob=min_prob)
 
+    def _generate_data_for_tuning_new(self, data, n=10, min_prob=0.01):
+        data, answers = [[elem[0], elem[2]] for elem in data], [elem[1] for elem in data]
+        basic_model_params = {"feat_column": 1, "return_log": True, "log_base": 2.0,
+                              "beam_width": self.basic_hyps_number}
+        basic_predictions = self.basic_model.predict(data, **basic_model_params)
+        possible_lm_forms, group_bounds, lm_scores = self._calculate_lm_scores(data)
+        group_forms, group_bounds_for_lm, group_bounds_for_basic = [], [0], [0]
+        indexes_for_lm, indexes_for_basic = [], []
+        scores = []
+        new_data_for_lm, new_forms_for_basic = [], []
+        corr_indexes = []
+        for i, (curr_basic_predictions, start) in enumerate(zip(basic_predictions, group_bounds)):
+            end = group_bounds[i+1]
+            curr_correct, has_correct = answers[i], False
+            curr_basic_forms = [elem[0] for elem in curr_basic_predictions]
+            if curr_correct in curr_basic_forms:
+                corr_indexes.append(curr_basic_forms.index(curr_correct))
+                has_correct = True
+            curr_basic_scores = [self._transform_basic_score(elem) for elem in curr_basic_predictions]
+            curr_lm_forms = possible_lm_forms[start:end]
+            # new_bound_for_lm, new_bound_for_basic = group_bounds_for_lm[-1], group_bounds_for_basic[-1]
+            curr_scores = []
+            for j, (form, basic_score) in enumerate(zip(curr_basic_forms, curr_basic_scores)):
+                if form in curr_lm_forms:
+                    index = curr_lm_forms.index(form)
+                    curr_score = [basic_score] + list(lm_scores[start+index])
+                else:
+                    curr_score = [basic_score] + [0.0] * (self.weights_dim - int(self.use_basic_scores))
+                    indexes_for_lm.append((i, j))
+                    new_data_for_lm.append((form, data[i][1]))
+                curr_scores.append(curr_score)
+            lm_indexes = np.argsort(np.sum(lm_scores[start:end], axis=1))[:self.lm_hyps_number]
+            curr_lm_forms = [curr_lm_forms[j] for j in lm_indexes]
+            curr_lm_scores = [lm_scores[start+j] for j in lm_indexes]
+            for form, score in zip(curr_lm_forms, curr_lm_scores):
+                if form not in curr_basic_forms:
+                    if form == curr_correct:
+                        corr_indexes.append(len(curr_scores))
+                        has_correct = True
+                    indexes_for_basic.append((i, len(curr_scores)))
+                    curr_scores.append([0.0] + list(score))
+                    curr_basic_forms.append(form)
+                    new_forms_for_basic.append(form)
+                    new_data_for_lm.append((form, data[i][1]))
+            scores.append(np.array(curr_scores))
+            # group_bounds_for_lm.append(len(new_forms_for_lm))
+            # group_bounds_for_basic.append(len(new_forms_for_basic))
+            group_forms.extend(curr_basic_forms)
+            if not has_correct:
+                curr_basic_forms.append(curr_correct)
+                indexes_for_basic.append((i, len(curr_scores)))
+                indexes_for_lm.append((i, len(curr_scores)))
+                corr_indexes.append(len(curr_scores))
+                curr_scores.append([0.0] * 3)
+        new_data_for_basic = [data[i] for i, j in indexes_for_basic]
+        new_basic_predictions = self.basic_model.predict(
+            new_data_for_basic, known_answers=new_forms_for_basic, **basic_model_params)
+        for (i, j), elem in zip(indexes_for_basic, new_basic_predictions):
+            scores[i][j, 0] = self._transform_basic_score(elem[0])
+        new_lm_scores = self._collect_lm_scores(new_data_for_lm)
+        for (i, j), elem in zip(indexes_for_lm, new_lm_scores):
+            scores[i][j, 1:] = elem
+        indexes = [0] + list(np.cumsum([len(x) for x in scores]))
+        scores = np.concatenate(scores, axis=0)
+        if not self.use_basic_scores:
+            scores = scores[:,1:]
+        X_tune, y_tune = [], []
+        # scores[:,1:] /= 2.5
+        scores = np.dot(scores, self.weights)
+        for i, start in enumerate(indexes[:-1]):
+            end, corr_pos = indexes[i+1], corr_indexes[i]
+            curr_scores = np.vstack([scores[start:start+corr_pos], scores[start+corr_pos+1:end]])
+            top_score = scores[start+corr_pos]
+            score_order = np.argsort(curr_scores.sum(axis=1))
+            curr_scores = curr_scores[score_order[:n]]
+            diff = top_score[None,:]- curr_scores
+            X_tune.extend(np.vstack([diff, -diff]))
+            y_tune.extend([1.0] * len(diff) + [0.0] * len(diff))
+        return X_tune, y_tune
 
 
+class LmRanker:
+
+    def __init__(self, forward_lm, backward_lm, to_rerank=False,
+                 max_lm_letter_score=-np.log(0.0001), threshold=np.log(100.0)):
+        self.forward_lm = forward_lm
+        self.backward_lm = backward_lm
+        self.to_rerank = to_rerank
+        self.max_lm_letter_score = max_lm_letter_score
+        self.threshold = threshold
+
+    def _get_lm_score(self, score):
+        return sum([min(x, self.max_lm_letter_score) for x in score[0]])
+
+    def rerank(self, data):
+        lengths = [len(elem[0]) for elem in data]
+        bounds = [0] + list(np.cumsum(lengths))
+        data_for_lm = [(word, feats) for elem, feats in data for word in elem]
+        # print(data_for_lm[:6])
+        forward_scores = [self._get_lm_score(x) for x in self.forward_lm.predict(data_for_lm, **LM_KWARGS)]
+        backward_scores = [self._get_lm_score(x) for x in self.backward_lm.predict(data_for_lm, **LM_KWARGS)]
+        # print(forward_scores[:6])
+        # print(backward_scores[:6])
+        scores = np.sum(np.array([forward_scores, backward_scores]), axis=0) / 2
+        answer = []
+        for i, start in enumerate(bounds[:-1]):
+            end = bounds[i+1]
+            best_score = np.min(scores[start:end])
+            active_indexes = np.where(scores[start:end] < best_score + self.threshold)[0]
+            if self.to_rerank:
+                curr_scores = scores[start + active_indexes]
+                active_indexes = active_indexes[np.argsort(curr_scores)]
+            answer.append([data[i][0][j] for j in active_indexes])
+        # print(answer[0])
+        # sys.exit()
+        return answer
 
 
 if __name__ == "__main__":
