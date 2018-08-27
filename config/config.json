@@ -12,7 +12,7 @@
     "dense_output_size": 96,
     "decoder_dropout": 0.2,
     "encoder_rnn_dropout": 0.2,
-    "lm_dropout": 0.2,
+    "lm_dropout": 0.4,
     "use_decoder_gate": true,
     "features_after_decoder": false,
     "output_history": 4,
@@ -26,7 +26,7 @@
     "output_embeddings_size": 32,
     "callbacks": {
       "EarlyStopping": {
-        "patience": 10,
+        "patience": 15,
         "monitor": "val_acc"
       }
     }

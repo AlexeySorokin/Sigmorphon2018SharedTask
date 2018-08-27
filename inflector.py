@@ -495,7 +495,8 @@ class Inflector:
 
     def _make_bucket_data(self, lemmas, bucket_indexes):
         bucket_size = len(bucket_indexes)
-        bucket_length = max(len(x) + 3 for x in lemmas)
+        # bucket_length = max(len(x) + 3 for x in lemmas)
+        bucket_length = max(len(lemmas[i]) + 3 for i in bucket_indexes)
         bucket_data = np.full(shape=(bucket_size, bucket_length),
                               fill_value=PAD, dtype=int)
         # заполняем закодированными символами
@@ -620,7 +621,7 @@ class Inflector:
         features_by_buckets = [
             np.array([self.extract_features(features[i]) for i in bucket_indexes])
             for _, bucket_indexes in buckets_with_indexes]
-        targets = np.array([[self.symbol_codes_.get(x, UNKNOWN) for x in elem] for elem in targets])
+        targets = [[self.symbol_codes_.get(x, UNKNOWN) for x in elem] for elem in targets]
         letter_positions_by_buckets = [
             make_table(letter_positions, indexes, fill_with_last=True)
             for length, indexes in buckets_with_indexes]
@@ -1087,9 +1088,9 @@ class Inflector:
             self.rebuild_test()
         words, features = [elem[0] for elem in data], [elem[feat_column] for elem in data]
         # output_lengths = [30 for x in words]
-        output_lengths = [12 for x in words]
+        output_lengths = [len(x) + 3 for x in words]
         # output_lengths = [30 for x in words]
-        buckets_with_indexes = collect_buckets(output_lengths, max_bucket_length=64)
+        buckets_with_indexes = collect_buckets(output_lengths, max_bucket_length=34)
         inputs, encoded_answers_by_buckets =\
             self._prepare_for_prediction(words, features, buckets_with_indexes, known_answers)
         answer = [[] for _ in words]
@@ -1123,7 +1124,7 @@ class Inflector:
             if self.use_symbol_statistics:
                 to_encoder.append(symbol_stats[i])
             curr_answers = np.array([encoder(to_encoder + [0])[0] for encoder in self.encoders_])
-            self._dump = [bucket, features[i], curr_answers]
+            # self._dump = [bucket, features[i], curr_answers]
             answer.append(curr_answers)
         return answer
 
@@ -1510,11 +1511,14 @@ class Inflector:
 
     def _predict_current_output(self, *args):
         answer = [[], [], []]
+        # if not hasattr(self, "_dump"):
+        #     self._dump = []
         for i, decoder in enumerate(self.decoders_):
             curr_args = [args[0][i]] + list(args[1:-2]) + [args[-2][:,i], args[-1][:,i]]
             curr_answer = decoder(curr_args + [0])
             for elem, to_append in zip(answer, curr_answer):
                 elem.append(to_append)
+            # self._dump.append((curr_args, curr_answer))
         answer[0] = np.mean(answer[0], axis=0)[:,0]
         answer[1] = np.transpose(answer[1], axes=(1, 0, 2))
         answer[2] = np.transpose(answer[2], axes=(1, 0, 2))
@@ -1522,13 +1526,13 @@ class Inflector:
 
     def _predict_current_output_slow(self, *args):
         answer = []
-        if not hasattr(self, "_dump"):
-            self._dump = []
+        # if not hasattr(self, "_dump"):
+        #     self._dump = []
         for i, decoder in enumerate(self.decoders_):
             curr_args = [args[0][:,i]] + list(args[1:])
             curr_answer = decoder(curr_args + [0])[-1]
             answer.append(curr_answer[:,-1])
-            self._dump.append((curr_args, curr_answer))
+            # self._dump.append((curr_args, curr_answer))
         answer = np.mean(answer, axis=0)
         return answer
 
@@ -1585,26 +1589,29 @@ class Inflector:
         return answer
 
     def evaluate(self, data, alignment_data):
-        m = len(data)
+        M = len(data)
         self.aligner.align(alignment_data, to_fit=True)
-        data_by_buckets, _ = self._preprocess(data, alignments=None, bucket_size=32, to_fit=False)
-        bucket_data = list(data_by_buckets[0])
-        data_to_evaluate, answer = bucket_data[:-1], bucket_data[-1]
-        encoded_data = self.encoders_[0](data_to_evaluate[:1] + [0])[0]
-        aligned_encoded_data = encoded_data[np.arange(m)[:,None], data_to_evaluate[2]]
-        aligned_source = data_to_evaluate[0][np.arange(m)[:,None], data_to_evaluate[2]]
-        shifted_targets = self._make_shifted_output(answer.shape[1], len(data), targets=answer)
-        to_decoder = [aligned_encoded_data, data_to_evaluate[1], shifted_targets, aligned_source]
-        states = [np.zeros(shape=(m, self.decoder_rnn_size), dtype=float),
-                  np.zeros(shape=(m, self.decoder_rnn_size), dtype=float)]
-        decoder_answers = []
+        data_by_buckets, indexes_by_buckets = self._preprocess(data, alignments=None, bucket_size=4, to_fit=False)
+        for bucket_data, bucket_indexes in zip(data_by_buckets, indexes_by_buckets):
+            m = len(bucket_indexes)
+            bucket_data = list(bucket_data)
+            data_to_evaluate, answer = bucket_data[:-1], bucket_data[-1]
+            encoded_data = self.encoders_[0](data_to_evaluate[:1] + [0])[0]
+            aligned_encoded_data = encoded_data[np.arange(m)[:,None], data_to_evaluate[2]]
+            aligned_source = data_to_evaluate[0][np.arange(m)[:,None], data_to_evaluate[2]]
+            shifted_targets = self._make_shifted_output(answer.shape[1], m, targets=answer)
+            to_decoder = [aligned_encoded_data, data_to_evaluate[1], shifted_targets, aligned_source]
+            states = [np.zeros(shape=(m, self.decoder_rnn_size), dtype=float),
+                      np.zeros(shape=(m, self.decoder_rnn_size), dtype=float)]
+            decoder_answers = []
         # predictions = self.models_[0].predict(data_to_evaluate)
-        predictions = self.func(data_to_evaluate + [0])
-        labels = np.argmax(predictions[0], axis=-1)
-        for i in range(25):
-            diff = (labels[:,:i+1] != answer[:, :i+1]).astype("int")
-            print(",".join(str(x) for x in np.max(diff, axis=-1)))
-        print("")
+            predictions = self.func(data_to_evaluate + [0])
+            labels = np.argmax(predictions[0], axis=-1)
+            for i in range(25):
+                diff = (labels[:,:i+1] != answer[:, :i+1]).astype("int")
+                if max(diff[:,0]):
+                    print(i, ",".join(str(x) for x in np.max(diff, axis=-1)))
+            print("")
         # for i in range(25):
         #     # curr_features = np.repeat(np.array(data_to_evaluate[1])[:,None], i+1, axis=1)
         #     curr_to_decoder = [aligned_encoded_data[:,:i+1], data_to_evaluate[1],
@@ -1628,27 +1635,31 @@ class Inflector:
         # # print(labels[:,-1])
         # # print(answer[:,i])
         # print("")
-        self.predict(data)
-        m = min(data_to_evaluate[0].shape[1], self._dump[0].shape[1])
-        print(np.max(np.abs(data_to_evaluate[0][:,:m] - self._dump[0][:,:m])))
-        print(np.max(np.abs(data_to_evaluate[1] - self._dump[1])))
-        m = min(encoded_data.shape[1], self._dump[2].shape[2])
-        print(np.max(np.abs(encoded_data[:,:m] - self._dump[2][0,:,:m])))
-        for i in range(12):
-            args, curr_predictions = self._dump[i+3]
-            labels = np.argmax(curr_predictions[:,-1], axis=-1)
-            diff = (labels != answer[:, i]).astype("int")
-            print(",".join(str(x) for x in diff))
-            for j, (elem, curr_elem) in enumerate(zip(predictions[2:], args)):
-                if j != 1:
-                    elem = elem[:,:i+1]
-                if j != 0:
-                    diff = (elem != curr_elem).astype("int")
-                else:
-                    diff = np.abs(elem - curr_elem)
-                axis = tuple(np.arange(1, diff.ndim))
-                print(",".join(str(x) for x in np.max(diff, axis=axis)))
-            print("")
+            curr_data = [data[index] for index in bucket_indexes]
+            self.predict(curr_data)
+            m = min(data_to_evaluate[0].shape[1], self._dump[0].shape[1])
+            print(np.max(np.abs(data_to_evaluate[0][:,:m] - self._dump[0][:,:m])))
+            print(np.max(np.abs(data_to_evaluate[1] - self._dump[1])))
+            m = min(encoded_data.shape[1], self._dump[2].shape[2])
+            diff = encoded_data[:,:m] - self._dump[2][0,:,:m]
+            diff *= (data_to_evaluate[0][:,:m,None] > 0).astype("int")
+            print(np.max(np.abs(diff)))
+            break
+            for i in range(12):
+                args, curr_predictions = self._dump[i+3]
+                labels = np.argmax(curr_predictions[:,-1], axis=-1)
+                diff = (labels != answer[:, i]).astype("int")
+                print(",".join(str(x) for x in diff))
+                for j, (elem, curr_elem) in enumerate(zip(predictions[2:], args)):
+                    if j != 1:
+                        elem = elem[:,:i+1]
+                    if j != 0:
+                        diff = (elem != curr_elem).astype("int")
+                    else:
+                        diff = np.abs(elem - curr_elem)
+                    axis = tuple(np.arange(1, diff.ndim))
+                    print(",".join(str(x) for x in np.max(diff, axis=axis)))
+                print("")
             # positions, histories = [0] * m, np.array([[1] for _ in range(m)])
         # for i in range(1):
         #     curr_to_decoder = [encoded_data[np.arange(m),positions,None], data_to_evaluate[1],
