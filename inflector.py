@@ -121,7 +121,7 @@ def make_auxiliary_target(alignment, mode):
                 break
         else:
             prefix_end = len(alignment)
-        for i, (x, y) in enumerate(alignment[:-1]):
+        for i, (x, y) in enumerate(alignment[::-1]):
             if x == y:
                 suffix_start = len(alignment) - i
                 break
@@ -610,7 +610,7 @@ class Inflector:
         """
         if buckets_number is None and bucket_size == -1:
             buckets_number = self.buckets_number
-        lemmas_lengths = [len(lemma)+2 for lemma in lemmas]
+        lemmas_lengths = [len(lemma)+3 for lemma in lemmas]
         alignment_lengths = [len(target) for target in targets]
         self.max_length_shift_ = max(
             0, max(y - 2*x for x, y in zip(lemmas_lengths, alignment_lengths)))
@@ -642,7 +642,7 @@ class Inflector:
             auxiliary_targets_by_buckets = []
             for i, elem in enumerate(auxiliary_targets):
                 auxiliary_targets_by_buckets.append(
-                    [make_table(elem, indexes, fill_value=fill_values[i])
+                    [make_table(elem, indexes, fill_value=fill_values[i], length=length)
                      for length, indexes in buckets_with_indexes])
         else:
             auxiliary_targets_by_buckets = []
@@ -767,8 +767,9 @@ class Inflector:
         for i, model in enumerate(self.models_):
             if model_file is not None:
                 curr_model_file = self._make_model_file(model_file, i+1)
+                monitor = "val_outputs_acc" if self.auxiliary_targets_number else "val_acc"
                 save_callback = ModelCheckpoint(
-                    curr_model_file, save_weights_only=True, save_best_only=True, monitor="val_acc")
+                    curr_model_file, save_weights_only=True, save_best_only=True, monitor=monitor)
                 curr_callbacks = self.callbacks + [save_callback]
             else:
                 curr_callbacks = self.callbacks
@@ -1031,7 +1032,7 @@ class Inflector:
         else:
             decoder = kb.Function(decoder_inputs + initial_decoder_states + [kb.learning_phase()],
                                   [first_output] + final_decoder_states)
-        self.func = kb.Function(inputs + [kb.learning_phase()], [outputs, symbol_outputs] + decoder_inputs)
+        self.func = kb.Function(inputs + [kb.learning_phase()], [first_output, symbol_outputs] + decoder_inputs)
         return model, encoder, decoder
 
     def _prepare_for_prediction(self, words, features,
@@ -1591,11 +1592,13 @@ class Inflector:
     def evaluate(self, data, alignment_data):
         M = len(data)
         self.aligner.align(alignment_data, to_fit=True)
-        data_by_buckets, indexes_by_buckets = self._preprocess(data, alignments=None, bucket_size=4, to_fit=False)
+        data_by_buckets, indexes_by_buckets = self._preprocess(data, alignments=None, bucket_size=20, to_fit=False)
         for bucket_data, bucket_indexes in zip(data_by_buckets, indexes_by_buckets):
+            # self.rebuild_test()
             m = len(bucket_indexes)
             bucket_data = list(bucket_data)
-            data_to_evaluate, answer = bucket_data[:-1], bucket_data[-1]
+            target_index = -1 - self.auxiliary_targets_number
+            data_to_evaluate, answer = bucket_data[:target_index], bucket_data[target_index]
             encoded_data = self.encoders_[0](data_to_evaluate[:1] + [0])[0]
             aligned_encoded_data = encoded_data[np.arange(m)[:,None], data_to_evaluate[2]]
             aligned_source = data_to_evaluate[0][np.arange(m)[:,None], data_to_evaluate[2]]
@@ -1604,14 +1607,17 @@ class Inflector:
             states = [np.zeros(shape=(m, self.decoder_rnn_size), dtype=float),
                       np.zeros(shape=(m, self.decoder_rnn_size), dtype=float)]
             decoder_answers = []
-        # predictions = self.models_[0].predict(data_to_evaluate)
-            predictions = self.func(data_to_evaluate + [0])
-            labels = np.argmax(predictions[0], axis=-1)
+            predictions = self.models_[0].predict(data_to_evaluate)
+        #     predictions = self.func(data_to_evaluate + [0])
+            if isinstance(predictions, list):
+                predictions = predictions[0]
+            labels = np.argmax(predictions, axis=-1)
             for i in range(25):
                 diff = (labels[:,:i+1] != answer[:, :i+1]).astype("int")
-                if max(diff[:,0]):
+                if max(diff[:,-1]):
                     print(i, ",".join(str(x) for x in np.max(diff, axis=-1)))
             print("")
+            continue
         # for i in range(25):
         #     # curr_features = np.repeat(np.array(data_to_evaluate[1])[:,None], i+1, axis=1)
         #     curr_to_decoder = [aligned_encoded_data[:,:i+1], data_to_evaluate[1],
