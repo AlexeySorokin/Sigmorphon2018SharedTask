@@ -28,7 +28,7 @@ if __name__ == "__main__":
     use_model, model_dir, model_name, use_model_scores = False, None, None, True
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
     language_file, test_data_dir, to_generate_patterns, tune_weights = None, "conll2018/task1/all", False, False
-    predictions_dir = None
+    predictions_dir, submissions_dir = None, None
     for opt, val in opts:
         if opt == "-M":
             use_model, model_dir = True, val
@@ -42,6 +42,8 @@ if __name__ == "__main__":
             language_file = val
         elif opt == "-p":
             predictions_dir = val
+        elif opt == "-s":
+            submissions_dir = val
         elif opt == "-t":
             tune_weights = True
     if language_file is not None:
@@ -75,6 +77,15 @@ if __name__ == "__main__":
         cls.train(data, dev_data, save_forward_lm=forward_save_file, save_reverse_lm=reverse_save_file)
         data_to_predict = [(x[0], x[2]) for x in dev_data]
         answer = cls.predict(data_to_predict, n=5)
+        if predictions_dir is not None:
+            outfile = os.path.join(predictions_dir, "{}-{}-out".format(language, mode))
+            if not os.path.exists(predictions_dir):
+                continue
+            with open(outfile, "w", encoding="utf8") as fout:
+                for source, predictions in zip(data, answer):
+                    predicted_words = [elem[0] for elem in predictions]
+                    fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[-1])]) + "\n")
+            print("Predicted for {}-{}".format(language, mode))
         answer_to_evaluate = [[word, elem[0], feats] for (word, feats), elem in zip(data_to_predict, answer)]
         curr_metrics = evaluate(answer_to_evaluate, dev_data)
         format_string, metrics_data = [], []
@@ -91,12 +102,12 @@ if __name__ == "__main__":
         metrics.append(metrics_data)
         if not cls.verbose:
             print(language, format_string.format(*metrics_data), end="")
-        if predictions_dir is not None:
+        if submissions_dir is not None:
             predict_file = os.path.join(test_data_dir, "{}-covered-test".format(language))
             data = read_infile(predict_file, feat_column=1)
             answer = cls.predict(data, n=5)
-            outfile = os.path.join(predictions_dir, "{}-{}-out".format(language, mode))
-            if not os.path.exists(predictions_dir):
+            outfile = os.path.join(submissions_dir, "{}-{}-out".format(language, mode))
+            if not os.path.exists(submissions_dir):
                 continue
             with open(outfile, "w", encoding="utf8") as fout:
                 for source, predictions in zip(data, answer):
