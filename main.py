@@ -27,7 +27,7 @@ def read_params(infile):
     return params
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-SHORT_OPTS = "l:o:S:L:m:tTP:pC:eE:r:"
+SHORT_OPTS = "l:o:S:L:m:tTP:pC:eE:r:s"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -42,6 +42,7 @@ if __name__ == "__main__":
     predict_dir, to_predict = None, False
     use_paradigms, use_lm, rerank_with_lm = False, False, ""
     lm_config_path = None
+    evaluate_on_submission = False
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
@@ -73,6 +74,8 @@ if __name__ == "__main__":
             eval_outfile = val
         elif opt == "-r":
             rerank_with_lm = val
+        elif opt == "-s":
+            evaluate_on_submission = True
     if languages is None:
         languages = [elem.rsplit("-", maxsplit=2) for elem in os.listdir(corr_dir)]
         languages = [(elem[0], elem[2]) for elem in languages if elem[1] == "train" and len(elem) >= 3]
@@ -170,9 +173,15 @@ if __name__ == "__main__":
                         predicted_words = [elem[0] for elem in predictions]
                         fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[2])]) + "\n")
             if to_evaluate:
+                if evaluate_on_submission:
+                    infile = os.path.join(corr_dir, "{}-test".format(language))
+                    eval_data = read_infile(infile)
+                    eval_answer = inflector.predict(eval_data, **params["predict"])
+                else:
+                    eval_data, eval_answer = dev_data, answer
                 answer_to_evaluate = [(word, [x[0] for x in elem], feats)
-                                      for (word, _, feats), elem in zip(test_data, answer)]
-                curr_metrics = evaluate(answer_to_evaluate, dev_data)
+                                      for (word, _, feats), elem in zip(eval_data, eval_answer)]
+                curr_metrics = evaluate(answer_to_evaluate, eval_data)
                 curr_metrics = prettify_metrics(curr_metrics)
                 metrics.append(((language, mode), curr_metrics[1]))
                 print(curr_metrics[0], end="")
