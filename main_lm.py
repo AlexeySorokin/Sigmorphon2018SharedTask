@@ -13,11 +13,11 @@ from paradigm_classifier import ParadigmLmClassifier
 from evaluate import evaluate, WIDTHS, get_format_string
 
 
-cls_config = {"tune_weights": False, "use_paradigm_counts": False, "verbose": 0}
+cls_config = {"use_paradigm_counts": False, "verbose": 0}
 languages = ["kurmanji"]
 modes = ["high"] * 1
 
-SHORT_OPTS = "M:m:sgl:p:t"
+SHORT_OPTS = "M:m:sgl:p:S:t"
 
 if __name__ == "__main__":
     config = tf.ConfigProto()
@@ -42,7 +42,7 @@ if __name__ == "__main__":
             language_file = val
         elif opt == "-p":
             predictions_dir = val
-        elif opt == "-s":
+        elif opt == "-S":
             submissions_dir = val
         elif opt == "-t":
             tune_weights = True
