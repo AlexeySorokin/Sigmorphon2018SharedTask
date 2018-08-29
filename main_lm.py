@@ -82,8 +82,8 @@ if __name__ == "__main__":
             if not os.path.exists(predictions_dir):
                 continue
             with open(outfile, "w", encoding="utf8") as fout:
-                for source, predictions in zip(data, answer):
-                    predicted_words = [elem[0] for elem in predictions]
+                for source, predictions in zip(dev_data, answer):
+                    predicted_words = predictions[0]
                     fout.write("\t".join([source[0], "#".join(predicted_words), ";".join(source[-1])]) + "\n")
             print("Predicted for {}-{}".format(language, mode))
         answer_to_evaluate = [[word, elem[0], feats] for (word, feats), elem in zip(data_to_predict, answer)]

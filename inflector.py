@@ -585,7 +585,7 @@ class Inflector:
         return targets_with_copy
 
     def _make_lm_data(self, data, indexes):
-        lm_states = self.lm_.predict_states_batch(data, mode=self.use_lm)
+        lm_states, _ = self.lm_.predict_states_batch(data, mode=self.use_lm)
         lm_states = np.concatenate([np.zeros_like(lm_states[:,:1]), lm_states], axis=1)
         right_pad_length = np.max(indexes)+1 - lm_states.shape[1]
         if right_pad_length > 0:
@@ -1125,7 +1125,7 @@ class Inflector:
             if self.use_symbol_statistics:
                 to_encoder.append(symbol_stats[i])
             curr_answers = np.array([encoder(to_encoder + [0])[0] for encoder in self.encoders_])
-            # self._dump = [bucket, features[i], curr_answers]
+            self._dump = [bucket, features[i], curr_answers]
             answer.append(curr_answers)
         return answer
 
@@ -1191,6 +1191,7 @@ class Inflector:
             if self.use_lm:
                 args.append(lm_states[is_active,None])
             args += [h_states[is_active, :], c_states[is_active, :]]
+            self._dump.append([np.where(is_active)[0]])
             curr_outputs, new_h_states, new_c_states = self._predict_current_output(*args)
             # active_source = source[np.arange(M), positions][is_active]
             curr_outputs[active_source == END, STEP_CODE] = 0.0
@@ -1294,19 +1295,23 @@ class Inflector:
                     curr_features = [encoded_features[index] for index in indexes_to_update_states]
                     lm_histories = []
                     for index in indexes_to_update_states:
-                        word = words[index][-self.lm_.history:]
-                        encoded_word = [self.recodings_for_lm_[x] for x in word]
+                        word = [s for s in words[index] if s != STEP_CODE]
+                        encoded_word = [self.recodings_for_lm_[x] for x in word[-self.lm_.history:]]
                         encoded_word = [0] * (self.lm_.history - len(encoded_word)) + encoded_word
                         lm_histories.append(encoded_word)
                     to_step = [np.array(lm_histories), np.array(curr_features),
                                new_lm_decoder_states[indexes_to_update_states,0],
                                new_lm_decoder_states[indexes_to_update_states,1]]
+                    self._dump[-1].append((indexes_to_update_states, np.array(lm_histories)))
                     from_step = self.lm_step_func(to_step + [0])
                     for j, (index, state, c_state, h_state) in\
                             enumerate(zip(indexes_to_update_states, *from_step)):
                         new_lm_states[index] = state
                         new_lm_decoder_states[index] = [c_state, h_state]
+                else:
+                    self._dump[-1].append(([], []))
                 lm_states, lm_decoder_states = new_lm_states, new_lm_decoder_states
+
             if not any(is_active):
                 break
         # здесь нужно переделать words, probs в список
@@ -1512,14 +1517,14 @@ class Inflector:
 
     def _predict_current_output(self, *args):
         answer = [[], [], []]
-        # if not hasattr(self, "_dump"):
-        #     self._dump = []
+        if not hasattr(self, "_dump"):
+            self._dump = []
         for i, decoder in enumerate(self.decoders_):
             curr_args = [args[0][i]] + list(args[1:-2]) + [args[-2][:,i], args[-1][:,i]]
             curr_answer = decoder(curr_args + [0])
             for elem, to_append in zip(answer, curr_answer):
                 elem.append(to_append)
-            # self._dump.append((curr_args, curr_answer))
+            self._dump[-1].extend((curr_args, curr_answer))
         answer[0] = np.mean(answer[0], axis=0)[:,0]
         answer[1] = np.transpose(answer[1], axes=(1, 0, 2))
         answer[2] = np.transpose(answer[2], axes=(1, 0, 2))
@@ -1589,12 +1594,51 @@ class Inflector:
             answer[1] = [x / np.log10(log_base) for x in probs_to_return]
         return answer
 
+    def evaluate_lm(self, data, processed_data):
+        lm_states, X_test = self.lm_.predict_states_batch(data, mode=self.use_lm)
+        X_, indexes = self.lm_.transform(data, buckets_number=1)
+        # X = X[0]
+        _, features = processed_data[:2]
+        X = np.zeros_like(X_[0][0], dtype=int)
+        for i, (word, _) in enumerate(data):
+            X[i, 0] = BEGIN
+            X[i, 1:1+len(word)] = [self.symbol_codes_[x] for x in word]
+            X[i, len(word) + 1] = END
+        # lm_states = self.lm_._logit_func_([X[0], X[1], 0])[0]
+        self.lm_.rebuild()
+        # for bucket, curr_indexes in zip(X, indexes):
+        m = len(data)
+        h_states = np.zeros(shape=(m, self.lm_.decoder_rnn_size), dtype=float)
+        c_states = np.zeros(shape=(m, self.lm_.decoder_rnn_size), dtype=float)
+        # for i in range(X[0].shape[1]):
+        for i in range(X.shape[1]):
+            curr_data_ = X_[0][0][:, max(i - 4, 0): i + 1]
+            curr_data = X[:, max(i - 4, 0): i + 1]
+            curr_data = np.array([[self.recodings_for_lm_[index] for index in elem] for elem in curr_data])
+            if i < 4:
+                curr_data = np.concatenate([np.zeros(shape=(m, 4 - i)), curr_data], axis=1)
+                curr_data_ = np.concatenate([np.zeros(shape=(m, 4 - i)), curr_data_], axis=1)
+            recoded_features = X_[0][1]
+            for_step = [curr_data_, recoded_features, h_states, c_states, 0]
+            from_step = self.lm_step_func(for_step)
+            curr_answer, h_states, c_states = from_step
+            diff = np.max(np.abs(lm_states[:,i] - curr_answer[:,0]))
+            if diff > 0:
+                print(i, "{:.2f}".format(diff))
+        return
+
+    def check_histories(self, i, indexes, bucket_data, history_indexes, histories):
+        return
+
     def evaluate(self, data, alignment_data):
         M = len(data)
         self.aligner.align(alignment_data, to_fit=True)
         data_by_buckets, indexes_by_buckets = self._preprocess(data, alignments=None, bucket_size=20, to_fit=False)
         for bucket_data, bucket_indexes in zip(data_by_buckets, indexes_by_buckets):
             # self.rebuild_test()
+            if self.use_lm:
+                self.evaluate_lm([data[i][1:] for i in bucket_indexes], bucket_data)
+                # continue
             m = len(bucket_indexes)
             bucket_data = list(bucket_data)
             target_index = -1 - self.auxiliary_targets_number
@@ -1607,17 +1651,17 @@ class Inflector:
             states = [np.zeros(shape=(m, self.decoder_rnn_size), dtype=float),
                       np.zeros(shape=(m, self.decoder_rnn_size), dtype=float)]
             decoder_answers = []
-            predictions = self.models_[0].predict(data_to_evaluate)
-        #     predictions = self.func(data_to_evaluate + [0])
-            if isinstance(predictions, list):
-                predictions = predictions[0]
-            labels = np.argmax(predictions, axis=-1)
-            for i in range(25):
+            # predictions = self.models_[0].predict(data_to_evaluate)
+            predictions = self.func(data_to_evaluate + [0])
+            # if isinstance(predictions, list):
+            #     predictions = predictions[0]
+            labels = np.argmax(predictions[0], axis=-1)
+            for i in range(min(labels.shape[1], answer.shape[1])):
                 diff = (labels[:,:i+1] != answer[:, :i+1]).astype("int")
                 if max(diff[:,-1]):
                     print(i, ",".join(str(x) for x in np.max(diff, axis=-1)))
             print("")
-            continue
+            # continue
         # for i in range(25):
         #     # curr_features = np.repeat(np.array(data_to_evaluate[1])[:,None], i+1, axis=1)
         #     curr_to_decoder = [aligned_encoded_data[:,:i+1], data_to_evaluate[1],
@@ -1650,21 +1694,27 @@ class Inflector:
             diff = encoded_data[:,:m] - self._dump[2][0,:,:m]
             diff *= (data_to_evaluate[0][:,:m,None] > 0).astype("int")
             print(np.max(np.abs(diff)))
-            break
-            for i in range(12):
-                args, curr_predictions = self._dump[i+3]
-                labels = np.argmax(curr_predictions[:,-1], axis=-1)
-                diff = (labels != answer[:, i]).astype("int")
+            for i in range(25):
+                indexes, args, curr_predictions, lm_histories = self._dump[i+3]
+                labels = np.argmax(curr_predictions[0][:,-1], axis=-1)
+                diff = (labels != answer[indexes, i]).astype("int")
+                print(i)
                 print(",".join(str(x) for x in diff))
                 for j, (elem, curr_elem) in enumerate(zip(predictions[2:], args)):
-                    if j != 1:
+                    elem = elem[indexes]
+                    if j in [0, 3, 4]:
+                        elem, curr_elem = elem[:,i], curr_elem[:,0]
+                    elif j == 2:
+                        elem = elem[:,max(i-2,0):i+1]
+                    elif j != 1:
                         elem = elem[:,:i+1]
-                    if j != 0:
+                    if j not in [0, 4]:
                         diff = (elem != curr_elem).astype("int")
                     else:
                         diff = np.abs(elem - curr_elem)
                     axis = tuple(np.arange(1, diff.ndim))
                     print(",".join(str(x) for x in np.max(diff, axis=axis)))
+                self.check_histories(i, indexes, bucket_data, *lm_histories)
                 print("")
             # positions, histories = [0] * m, np.array([[1] for _ in range(m)])
         # for i in range(1):

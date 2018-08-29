@@ -527,7 +527,7 @@ class NeuralLM:
         X_test, indexes = self.transform(X, buckets_number=1, max_bucket_length=len(X))
         func = self._logit_func_  if mode == "logit" else self._state_func_
         states = func(X_test[0][:fields_number] + [0])[0]
-        return states
+        return states, X_test
 
     def predict_proba(self, X, batch_size=256):
         fields_number = 2 if self.labels_ is not None else 1

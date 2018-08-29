@@ -87,7 +87,7 @@ if __name__ == "__main__":
         test_file = os.path.join(corr_dir, "{}-dev".format(language))
         data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
         data *= params.get("data_multiple", 1)
-        dev_data = test_data[:]
+        dev_data = test_data
         # data_for_alignment = [elem[:2] for elem in data]
         # aligner = Aligner(n_iter=1, separate_endings=True, init="lcs",
         #                   init_params={"gap": 2, "initial_gap": 3})
@@ -116,7 +116,7 @@ if __name__ == "__main__":
                         lm_params = json.load(fin)
                     lm = NeuralLM(**lm_params)
                     lm.train(data_for_lm, dev_data_for_lm, save_file=lm_file)
-                use_lm = True
+                use_lm = params["use_lm"]
             else:
                 use_lm, lm_file = False, None
             inflector = Inflector(use_lm=use_lm, lm_file=lm_file, **params["model"])
