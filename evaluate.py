@@ -63,12 +63,13 @@ def get_format_string(x, width=None):
     else:
         return "{}"
 
-SHORT_OPTS = "l:o:t:c:vs:m:"
+SHORT_OPTS = "l:o:t:c:vs:m:T"
 
 if __name__ == "__main__":
     opts, args = getopt.getopt(sys.argv[1:], SHORT_OPTS)
     languages, outfile, verbose, sep, model_name = None, None, False, " ", None
     test_dir, corr_dir = "baseline-results", "conll2018/task1/all"
+    suffix = "dev"
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
@@ -84,6 +85,8 @@ if __name__ == "__main__":
             sep = val
         elif opt == "-m":
             model_name = val
+        elif opt == "-T":
+            suffix = "test"
     if languages is None:
         languages = [tuple(elem.rsplit("-", maxsplit=2)[:2]) for elem in os.listdir(test_dir)]
     results = []
@@ -93,7 +96,7 @@ if __name__ == "__main__":
             filename = "{}-{}".format(model_name, filename)
         infile = os.path.join(test_dir, filename)
         if os.path.exists(infile):
-            corr_file = os.path.join(corr_dir, "{}-dev".format(language))
+            corr_file = os.path.join(corr_dir, "{}-{}".format(language, suffix))
             results.append([language, mode] + list(evaluate_files(infile, corr_file, sep=sep)))
     results.sort(key=lambda x: (x[0], MODES.index(x[1])))
     if outfile is not None:
