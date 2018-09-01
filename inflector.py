@@ -19,7 +19,8 @@ else:
 import keras.regularizers as kreg
 from keras.optimizers import adam
 import keras.callbacks as kcall
-from keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
+
+import neural.common_neural as kcall
 
 def alignment_to_symbols(alignment, reverse=False, append_eow=False):
     """
@@ -208,7 +209,7 @@ def load_inflector(infile, verbose=1):
     # коллбэки
     args['callbacks'] = []
     for key, cls in zip(["early_stopping_callback", "reduce_LR_callback"],
-                        [EarlyStopping, ReduceLROnPlateau]):
+                        [MultiEarlyStopping, ReduceLROnPlateau]):
         if key in json_data:
             args['callbacks'].append(cls(**json_data[key]))
     # создаём языковую модель
@@ -387,8 +388,8 @@ class Inflector:
             elif attr == "callbacks":
                 callback_info = dict()
                 for callback in val:
-                    if isinstance(callback, EarlyStopping):
-                        callback_info["EarlyStopping"] =\
+                    if isinstance(callback, MultiEarlyStopping):
+                        callback_info["MultiEarlyStopping"] =\
                             {key: getattr(callback, key) for key in ["patience", "monitor", "min_delta"]}
                     elif isinstance(callback, ReduceLROnPlateau):
                         callback_info["ReduceLROnPlateau"] = \
@@ -767,8 +768,8 @@ class Inflector:
         for i, model in enumerate(self.models_):
             if model_file is not None:
                 curr_model_file = self._make_model_file(model_file, i+1)
-                monitor = "val_outputs_acc" if self.auxiliary_targets_number else "val_acc"
-                save_callback = ModelCheckpoint(
+                monitor = "outputs_acc" if self.auxiliary_targets_number else "acc"
+                save_callback = ModelMultiCheckpoint(
                     curr_model_file, save_weights_only=True, save_best_only=True, monitor=monitor)
                 curr_callbacks = self.callbacks + [save_callback]
             else:

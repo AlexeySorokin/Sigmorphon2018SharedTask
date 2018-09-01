@@ -25,9 +25,9 @@
     "use_output_embeddings": true,
     "output_embeddings_size": 32,
     "callbacks": {
-      "EarlyStopping": {
+      "MultiEarlyStopping": {
         "patience": 15,
-        "monitor": "val_acc"
+        "monitor": "acc"
       }
     }
   },

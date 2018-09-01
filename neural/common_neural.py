@@ -3,12 +3,13 @@ import numpy as np
 # import theano.tensor as tT
 # import theano
 
+import warnings
 import keras.backend as kb
 import keras.layers as kl
 from keras.engine import Layer, Model
 from keras.engine.topology import InputSpec
 from keras.initializers import Constant
-from keras.callbacks import Callback, ProgbarLogger
+from keras.callbacks import *
 
 from .common import BEGIN, PAD
 
@@ -42,6 +43,134 @@ class BasicMetricsProgbarLogger(ProgbarLogger):
                                       (m[:4] == "val_" and m[4:] in self.BASIC_METRICS))]
         self.epochs = self.params['epochs']
 
+
+class ModelMultiCheckpoint(ModelCheckpoint):
+
+    def __init__(self, filepath, monitor='loss', verbose=0,
+                 save_best_only=False, save_weights_only=False,
+                 mode='auto', period=1):
+        super(ModelCheckpoint, self).__init__()
+        self.monitor = [monitor, "val_{}".format(monitor)]
+        self.verbose = verbose
+        self.filepath = filepath
+        self.save_best_only = save_best_only
+        self.save_weights_only = save_weights_only
+        self.period = period
+        self.epochs_since_last_save = 0
+
+        if mode not in ['auto', 'min', 'max']:
+            warnings.warn('ModelCheckpoint mode %s is unknown, '
+                          'fallback to auto mode.' % (mode),
+                          RuntimeWarning)
+            mode = 'auto'
+
+        if mode == 'min':
+            self.monitor_op = np.less
+            self.best = np.Inf
+        elif mode == 'max':
+            self.monitor_op = np.greater
+            self.best = -np.Inf
+        else:
+            if any(('acc' in x or 'fmeasure' in x) for x in self.monitor):
+                self.monitor_op = np.greater
+                self.best = -np.Inf
+            else:
+                self.monitor_op = np.less
+                self.best = np.Inf
+
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        self.epochs_since_last_save += 1
+        if self.epochs_since_last_save >= self.period:
+            self.epochs_since_last_save = 0
+            filepath = self.filepath.format(epoch=epoch + 1, **logs)
+            if self.save_best_only:
+                try:
+                    current = np.min([logs.get(x) for x in self.monitor])
+                except ValueError:
+                    warnings.warn('Can save best model only with %s available, '
+                                  'skipping.' % (",".join(self.monitor)), RuntimeWarning)
+                    return
+                if self.monitor_op(current, self.best):
+                    if self.verbose > 0:
+                        print('\nEpoch %05d: %s improved from %0.5f to %0.5f,'
+                              ' saving model to %s'
+                              % (epoch + 1, self.monitor, self.best,
+                                 current, filepath))
+                    self.best = current
+                    if self.save_weights_only:
+                        self.model.save_weights(filepath, overwrite=True)
+                    else:
+                        self.model.save(filepath, overwrite=True)
+                else:
+                    if self.verbose > 0:
+                        print('\nEpoch %05d: %s did not improve from %0.5f' %
+                              (epoch + 1, self.monitor, self.best))
+            else:
+                if self.verbose > 0:
+                    print('\nEpoch %05d: saving model to %s' % (epoch + 1, filepath))
+                if self.save_weights_only:
+                    self.model.save_weights(filepath, overwrite=True)
+                else:
+                    self.model.save(filepath, overwrite=True)
+
+
+class MultiEarlyStopping(EarlyStopping):
+
+    def __init__(self, monitor='loss',
+                 min_delta=0, patience=0, verbose=0, mode='auto'):
+        super(EarlyStopping, self).__init__()
+
+        self.monitor = [monitor, "val_{}".format(monitor)]
+        self.patience = patience
+        self.verbose = verbose
+        self.min_delta = min_delta
+        self.wait = 0
+        self.stopped_epoch = 0
+
+        if mode not in ['auto', 'min', 'max']:
+            warnings.warn('EarlyStopping mode %s is unknown, '
+                          'fallback to auto mode.' % mode,
+                          RuntimeWarning)
+            mode = 'auto'
+
+        if mode == 'min':
+            self.monitor_op = np.less
+        elif mode == 'max':
+            self.monitor_op = np.greater
+        else:
+            if any(('acc' in x or 'fmeasure' in x) for x in self.monitor):
+                self.monitor_op = np.greater
+            else:
+                self.monitor_op = np.less
+
+        if self.monitor_op == np.greater:
+            self.min_delta *= 1
+        else:
+            self.min_delta *= -1
+
+    def on_epoch_end(self, epoch, logs=None):
+        try:
+            current = np.min([logs.get(x) for x in self.monitor])
+        except ValueError:
+            warnings.warn(
+                'Early stopping conditioned on metrics `%s` '
+                'which is not available. Available metrics are: %s' %
+                ((",".join(self.monitor)), ','.join(list(logs.keys()))), RuntimeWarning
+            )
+            return
+        if self.monitor_op(current - self.min_delta, self.best):
+            self.best = current
+            self.wait = 0
+        else:
+            self.wait += 1
+            if self.wait >= self.patience:
+                self.stopped_epoch = epoch
+                self.model.stop_training = True
+
+    def on_train_end(self, logs=None):
+        if self.stopped_epoch > 0 and self.verbose > 0:
+            print('Epoch %05d: early stopping' % (self.stopped_epoch + 1))
 
 class ClassCrossEntropy:
 

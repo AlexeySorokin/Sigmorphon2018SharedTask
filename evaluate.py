@@ -25,7 +25,7 @@ def prettify_metrics(metrics):
 
 def evaluate(test_data, corr_data):
     corr, cov, total, total_dist, best_dist = 0, 0, len(test_data), 0.0, 0.0
-    for test_elem, corr_elem in zip(test_data, corr_data):
+    for i, (test_elem, corr_elem) in enumerate(zip(test_data, corr_data), 1):
         test_words = test_elem[1]
         corr_word = corr_elem[1]
         if corr_word == test_words[0]:
