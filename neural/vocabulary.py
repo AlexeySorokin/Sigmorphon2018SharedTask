@@ -39,6 +39,9 @@ class Vocabulary:
     def toidx(self, x):
         return self.symbol_codes_.get(remove_token_field(x), UNKNOWN)
 
+    def __getitem__(self, item):
+        return self.symbols_[item]
+
     @property
     def symbols_number_(self):
         return len(self.symbols_)

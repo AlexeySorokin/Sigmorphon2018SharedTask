@@ -91,6 +91,11 @@ def make_bucket_indexes(lengths, buckets_number=None,
     bucket_lengths = [lengths[i-1] for i in level_indexes]
     return bucket_indexes, bucket_lengths
 
+
+def decode_label(label):
+    return label.split("_")
+
+
 class NeuralLM:
 
     def __init__(self, reverse=False, min_symbol_count=1,
@@ -101,7 +106,7 @@ class NeuralLM:
                  use_embeddings=False, embeddings_size=16,
                  feature_embedding_layers=False, feature_embeddings_size=32,
                  rnn="lstm", encoder_rnn_size=64,
-                 decoder_rnn_size=64, dense_output_size=32,
+                 decoder_rnn_size=64, decoder_layers=1, dense_output_size=32,
                  embeddings_dropout=0.0, encoder_dropout=0.0, decoder_dropout=0.0,
                  random_state=187, verbose=1, callbacks=None,
                  # use_custom_callback=False
@@ -125,6 +130,7 @@ class NeuralLM:
         # self.rnn = rnn
         self.encoder_rnn_size = encoder_rnn_size
         self.decoder_rnn_size = decoder_rnn_size
+        self.decoder_layers = decoder_layers
         self.dense_output_size = dense_output_size
         # self.dropout = dropout
         self.embeddings_dropout = embeddings_dropout
@@ -215,7 +221,10 @@ class NeuralLM:
     @property
     def labels_number_(self):
         if self.use_label:
-            return len(self.labels_) + len(self.tags_) * int(self.use_full_tags)
+            answer = len(self.labels_)
+            if self.use_full_tags:
+                answer += len(self.tags_)
+            return answer
         else:
             return 0
 
@@ -310,6 +319,7 @@ class NeuralLM:
         else:
             self.labels_, self.label_codes_ = None, None
         X_train, indexes_by_buckets = self.transform(X)
+        self._make_statistics(X)
         if X_dev is not None:
             X_dev, dev_indexes_by_buckets = self.transform(X_dev, max_bucket_length=256)
         else:
@@ -324,6 +334,22 @@ class NeuralLM:
                     model_file = save_file[:pos] + ".hdf5"
             self.to_json(save_file, model_file)
         self.train_model(X_train, X_dev, model_file=model_file)
+        return self
+
+    def _make_statistics(self, X):
+        self.max_length_ = max(10, max(len(elem[0]) for elem in X))
+        if self.use_label:
+            label_counts = defaultdict(int)
+            if self.use_feats:
+                raise NotImplementedError("Not implemented yet for features")
+            else:
+                for _, label in X:
+                    if not isinstance(label, str):
+                        label_counts["_".join(label)] += 1
+            self.label_counts_ = dict()
+            total_count = sum(label_counts.values())
+            for key, value in label_counts.items():
+                self.label_counts_[key] = value / total_count
         return self
 
     def build(self, test=False):
@@ -351,6 +377,8 @@ class NeuralLM:
         step_func_outputs = [lstm_outputs] + final_decoder_states + final_encoder_states
         logit_func_outputs = [pre_outputs] + final_decoder_states + final_encoder_states
         self._step_func_ = kb.Function(step_func_inputs + [kb.learning_phase()], step_func_outputs)
+        self._output_step_func_ = kb.Function(step_func_inputs + [kb.learning_phase()],
+                                             [outputs] + final_decoder_states + final_encoder_states)
         self._logit_step_func_ = kb.Function(step_func_inputs + [kb.learning_phase()], logit_func_outputs)
         self._state_func_ = kb.Function(inputs + [kb.learning_phase()], [lstm_outputs])
         self._logit_func_ = kb.Function(inputs + [kb.learning_phase()], [pre_outputs])
@@ -401,20 +429,29 @@ class NeuralLM:
         return answer
 
     def _build_output_network(self, inputs):
-        initial_states = [kb.zeros_like(inputs[:, 0, 0]), kb.zeros_like(inputs[:, 0, 0])]
+        initial_states = [kb.zeros_like(inputs[:, 0, 0]) for _ in range(2*self.decoder_layers)]
         for i, elem in enumerate(initial_states):
-            initial_states[i] = kb.tile(elem[:, None], [1, self.encoder_rnn_size])
-        decoder = kl.LSTM(self.decoder_rnn_size, return_sequences=True, return_state=True)
-        lstm_outputs, final_c_states, final_h_states = decoder(inputs, initial_state=initial_states)
-        pre_outputs = kl.Dense(self.dense_output_size, activation="relu")(lstm_outputs)
+            L = None # if i < 128 else self.decoder_rnn_size
+            initial_states[i] = kb.tile(elem[:, L], [1, self.encoder_rnn_size])
+        lstm_inputs, lstm_outputs = [None] * self.decoder_layers, [None] * self.decoder_layers
+        lstm_inputs[0] = inputs
+        final_states = []
+        for i in range(self.decoder_layers):
+            decoder = kl.LSTM(self.decoder_rnn_size, return_sequences=True, return_state=True)
+            lstm_outputs[i], final_c_states, final_h_states = decoder(lstm_inputs[i], initial_state=initial_states[2*i:2*i+2])
+            final_states.extend([final_c_states, final_h_states])
+            if i < self.decoder_layers - 1:
+                lstm_inputs[i+1] = lstm_outputs[i]
+        pre_outputs = kl.Dense(self.dense_output_size, activation="relu")(lstm_outputs[-1])
         outputs = kl.TimeDistributed(
             kl.Dense(self.symbols_number_, activation="softmax"))(pre_outputs)
-        return outputs, initial_states, [final_c_states, final_h_states], lstm_outputs, pre_outputs
+        return outputs, initial_states, final_states, lstm_outputs[-1], pre_outputs
 
     def rebuild(self, test=True):
-        weights = self.model_.get_weights()
-        self.build(test=test)
-        self.model_.set_weights(weights)
+        if self.built_ != "test":
+            weights = self.model_.get_weights()
+            self.build(test=test)
+            self.model_.set_weights(weights)
         return self
 
     def train_model(self, X, X_dev=None, model_file=None):
@@ -468,15 +505,9 @@ class NeuralLM:
         :return:
         """
         bucket_size, length = bucket[0].shape[:2]
-        # padding = np.full(answer[:,:1].shape, PAD, answer.dtype)
-        # shifted_data = np.hstack((answer[:,1:], padding))
-        # evaluate принимает только данные того же формата, что и выход модели
         answers = to_one_hot(answer, self.symbols_number_)
-        # total = self.model.evaluate(bucket, answers, batch_size=batch_size)
         # last two scores are probabilities of word end and final padding symbol
         scores = self.model_.predict(bucket, batch_size=batch_size)
-        # answers_, scores_ = kb.constant(answers), kb.constant(scores)
-        # losses = kb.eval(kb.categorical_crossentropy(answers_, scores_))
         scores = np.clip(scores, EPS, 1.0 - EPS)
         losses = -np.sum(answers * np.log(scores), axis=-1)
         total = np.sum(losses, axis=1) # / np.log(2.0)
@@ -488,6 +519,87 @@ class NeuralLM:
 
     def score(self, x, **args):
         return self.predict([x], batch_size=1, **args)
+
+    def sample(self, n, batch_size=32, max_length=None):
+        if max_length is None:
+            max_length = self.max_length_ + 5
+        possible_labels = list(map(decode_label, self.label_counts_))
+        probs = list(self.label_counts_.values())
+        probs = np.cumsum(probs)
+        answer = []
+        np.random.seed(self.random_state)
+        while len(answer) < n:
+            if self.use_label:
+                random_numbers = np.random.uniform(0, 1, batch_size)
+                indexes = [bisect.bisect_left(probs, x) for x in random_numbers]
+                batch_labels = [possible_labels[i] for i in indexes]
+                batch_features = np.array([self._make_feature_vector(x) for x in batch_labels])
+            else:
+                batch_features = None
+            indexes, lemmas = self._sample_batch(batch_size, max_length, batch_features)
+            for index, lemma in zip(indexes, lemmas):
+                if self.use_label:
+                    answer.append([lemma, batch_labels[index]])
+                else:
+                    answer.append(lemma)
+                if len(answer) == n:
+                    break
+        return answer
+
+    def _sample_batch(self, batch_size, max_length, features=None, slow=False):
+        if slow:
+            history = np.zeros(shape=(batch_size, max_length), dtype="int")
+            history[:,0] = BEGIN
+        else:
+            self.rebuild(test=True)
+            history = np.zeros(shape=(batch_size, self.history), dtype="int")
+            history[:,-1] = BEGIN
+        words = ["" for _ in range(batch_size)]
+        indexes_mask = np.ones(dtype=bool, shape=(batch_size,))
+        if not slow:
+            if self.use_attention:
+                encoder_states = list(np.zeros(shape=(2, batch_size, self.encoder_rnn_size), dtype="float"))
+            else:
+                encoder_states = []
+            decoder_states = list(np.zeros(shape=(2, batch_size, self.decoder_rnn_size), dtype="float"))
+        for i in range(max_length):
+            active_indexes = np.where(indexes_mask)[0]
+            if len(active_indexes) == 0:
+                break
+            if self.use_label:
+                inputs = [history[indexes_mask], features[indexes_mask]]
+            else:
+                inputs = [history[indexes_mask]]
+            if slow:
+                probs = self.model_.predict(inputs)[:,i]
+            else:
+                states = [elem[active_indexes] for elem in encoder_states + decoder_states]
+                answer = self._output_step_func_(inputs + states + [0])
+                probs, new_encoder_states, new_decoder_states = answer[0][:,0], answer[1:-2], answer[-2:]
+            # probs[:, END] += np.sum(probs[:, [PAD, BEGIN, UNKNOWN]], axis=-1)
+            # probs = np.where(probs < 0.1, 0.0, probs)
+            probs[:, [PAD, BEGIN, UNKNOWN]] = 0.0
+            cumulative_probs = np.cumsum(probs, axis=-1)
+            random_scores = np.random.uniform(0, cumulative_probs[:,-1], probs.shape[0])
+            letter_indexes = [bisect.bisect(scores, x) for scores, x in zip(cumulative_probs, random_scores)]
+            if slow:
+                if i < max_length - 1:
+                    history[active_indexes, i+1] = letter_indexes
+            else:
+                history[active_indexes,:-1] = history[active_indexes,1:]
+                history[active_indexes, -1] = letter_indexes
+                if self.use_attention:
+                    encoder_states[0][active_indexes] = new_encoder_states[0]
+                    encoder_states[1][active_indexes] = new_encoder_states[1]
+                decoder_states[0][active_indexes] = new_decoder_states[0]
+                decoder_states[1][active_indexes] = new_decoder_states[1]
+            for index, letter in zip(active_indexes, letter_indexes):
+                if letter == END:
+                    indexes_mask[index] = False
+                words[index] += self.vocabulary_[letter]
+        indexes = np.where(np.logical_not(indexes_mask))[0]
+        return indexes, [words[i] for i in indexes]
+
 
     def predict(self, X, batch_size=32, return_letter_scores=False,
                 return_log_probs=False, return_exp_total=False):

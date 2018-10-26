@@ -40,7 +40,7 @@ if __name__ == "__main__":
     analysis_dir, pred_dir, to_evaluate, eval_outfile = "results", "predictions", False, None
     to_train, to_test = True, True
     predict_dir, to_predict = None, False
-    use_paradigms, use_lm, rerank_with_lm = False, False, ""
+    use_paradigms, use_lm, to_rerank_with_lm = False, False, ""
     lm_config_path = None
     evaluate_on_submission = False
     for opt, val in opts:
@@ -73,7 +73,7 @@ if __name__ == "__main__":
         elif opt == "-E":
             eval_outfile = val
         elif opt == "-r":
-            rerank_with_lm = val
+            to_rerank_with_lm = val
         elif opt == "-s":
             evaluate_on_submission = True
     if languages is None:
@@ -128,12 +128,12 @@ if __name__ == "__main__":
             inflector.train(data, dev_data=dev_data, save_file=save_file)
         if use_paradigms:
             paradigm_checker = ParadigmChecker().train(data)
-        if rerank_with_lm:
+        if to_rerank_with_lm:
             forward_save_file = "language_models/{}-{}.json".format(language, mode)
             forward_lm = load_lm(forward_save_file) if os.path.exists(forward_save_file) else None
             reverse_save_file = "language_models/reverse-{}-{}.json".format(language, mode)
             reverse_lm = load_lm(reverse_save_file) if os.path.exists(reverse_save_file) else None
-            lm_ranker = LmRanker(forward_lm, reverse_lm, to_rerank=(rerank_with_lm == "rerank"))
+            lm_ranker = LmRanker(forward_lm, reverse_lm, to_rerank=(to_rerank_with_lm == "rerank"))
         if to_test:
             alignment_data = [elem[:2] for elem in data]
             # inflector.evaluate(test_data[:20], alignment_data=alignment_data)
@@ -152,21 +152,9 @@ if __name__ == "__main__":
             #             for prediction in predictions:
             #                 fout.write("{}\t{}\t{}\t{:.2f}\n".format(
             #                     word, ";".join(descr), prediction[0], 100 * prediction[2]))
+            if to_rerank_with_lm:
+                answer = lm_ranker.rerank_with_lm(answer, test_data)
             pred_file = os.path.join(pred_dir, filename+"-out") if pred_dir is not None else None
-            if rerank_with_lm:
-                data_for_reranking = [([x[0] for x in predictions], source[2])
-                                       for source, predictions in zip(test_data, answer)]
-                reranked_predictions = lm_ranker.rerank(data_for_reranking)
-                new_answer = []
-                for elem, filtered_words in zip(answer, reranked_predictions):
-                    new_elem = []
-                    for word in filtered_words:
-                        for prediction in elem:
-                            if prediction[0] == word:
-                                new_elem.append(prediction)
-                                break
-                    new_answer.append(new_elem)
-                answer = new_answer
             if pred_file is not None:
                 with open(pred_file, "w", encoding="utf8") as fout:
                     for source, predictions in zip(test_data, answer):
@@ -177,6 +165,8 @@ if __name__ == "__main__":
                     infile = os.path.join(corr_dir, "{}-test".format(language))
                     eval_data = read_infile(infile)
                     eval_answer = inflector.predict(eval_data, **params["predict"])
+                    if to_rerank_with_lm:
+                        eval_answer = lm_ranker.rerank_with_lm(eval_answer, test_data)
                 else:
                     eval_data, eval_answer = dev_data, answer
                 answer_to_evaluate = [(word, [x[0] for x in elem], feats)

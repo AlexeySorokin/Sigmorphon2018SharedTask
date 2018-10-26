@@ -471,6 +471,21 @@ class LmRanker:
         # sys.exit()
         return answer
 
+    def rerank_with_lm(self, answer, test_data):
+        data_for_reranking = [([x[0] for x in predictions], source[2])
+                              for source, predictions in zip(test_data, answer)]
+        reranked_predictions = self.rerank(data_for_reranking)
+        new_answer = []
+        for elem, filtered_words in zip(answer, reranked_predictions):
+            new_elem = []
+            for word in filtered_words:
+                for prediction in elem:
+                    if prediction[0] == word:
+                        new_elem.append(prediction)
+                        break
+            new_answer.append(new_elem)
+        return new_answer
+
 
 if __name__ == "__main__":
     infile = "conll2018/task1/all/belarusian-train-medium"
