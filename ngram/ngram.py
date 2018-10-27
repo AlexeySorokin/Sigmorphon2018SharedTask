@@ -12,13 +12,14 @@ from read import read_infile
 class LabeledNgramModel:
 
     def __init__(self, max_ngram_length=3, all_ngram_length=3,
-                 min_count=1, min_symbol_prob=0.01, reverse=False,
-                 seed=157):
+                 min_count=1, min_letter_prob=0.02, min_end_prob=0.25,
+                 reverse=False, seed=157):
         self.max_ngram_length = max(max_ngram_length, all_ngram_length)
         self.all_ngram_length = all_ngram_length
         self.min_count = min_count
         self.reverse = reverse
-        self.min_symbol_prob = min_symbol_prob
+        self.min_letter_prob = min_letter_prob
+        self.min_end_prob = min_end_prob
         self.seed = seed
         np.random.seed(self.seed)
 
@@ -30,6 +31,7 @@ class LabeledNgramModel:
         self.labels_ = sorted(set(elem[1] for elem in X))
         self.label_codes_ = {label: i for i, label in enumerate(self.labels_, 1)}
         counts = [defaultdict(self.default_array_func) for i in range(self.max_ngram_length)]
+        self.label_counts_ = defaultdict(int)
         for word, label in X:
             if self.reverse:
                 word = word[::-1]
@@ -39,6 +41,9 @@ class LabeledNgramModel:
                     ngram = word[start:start+L]
                     counts[L - 1][ngram][0] += 1
                     counts[L - 1][ngram][self.label_codes_[label]] += 1
+            self.label_counts_[word] += 1
+        for label in self.label_counts_:
+            self.label_counts_[label] /= len(X)
         self.max_length_ = max(len(word) for word, _ in X)
         self._make_trie(counts)
         return self
@@ -77,10 +82,10 @@ class LabeledNgramModel:
                     else:
                         history_counts = self.default_array_func()
                     history_cont_counts = continuation_counts[history]
-                    alpha_pos = np.nan_to_num((history_counts[1:] - history_cont_counts[1:]) / history_counts[1:])
+                    alpha_pos = np.nan_to_num((history_counts - history_cont_counts) / history_counts)
                     alpha_hist = np.nan_to_num(history_counts / (history_counts + history_cont_counts))
                 else:
-                    alpha_pos = np.zeros(shape=(self.labels_number,), dtype=float)
+                    alpha_pos = np.zeros(shape=(self.labels_number+1,), dtype=float)
                     alpha_hist = np.zeros(shape=(self.labels_number+1,), dtype=float)
                 children = dict()
                 for letter, letter_counts in continuations[history].items():
@@ -98,9 +103,9 @@ class LabeledNgramModel:
                         letter_probs[0] += (1 - alpha_hist[0]) * parent_letter_probs[0]
                         # (alpha+beta) * p(w | h, T) + (1 - alpha) p0(w | h, T) + (1 - beta) p(w | h', T)
                         letter_probs[1:] =\
-                            (alpha_hist[1:]+alpha_pos) * np.nan_to_num(letter_counts / history_counts)[1:]
+                            (alpha_hist[1:]+alpha_pos[0]) * np.nan_to_num(letter_counts / history_counts)[1:]
                         letter_probs[1:] += (1.0 - alpha_hist[1:]) * parent_letter_probs[1:]
-                        letter_probs[1:] += (1.0 - alpha_pos) * letter_probs[0]
+                        letter_probs[1:] += (1.0 - alpha_pos[0]) * letter_probs[0]
                         letter_probs[1:] /= 2.0
                     children[letter] = letter_probs
                 self.trie_[history] = (alpha_pos, alpha_hist, children)
@@ -114,7 +119,8 @@ class LabeledNgramModel:
         return self
 
     def prob(self, history, letter, label=None, return_history=False):
-        label = self.label_codes_.get(label, 0)
+        if isinstance(label, str):
+            label = self.label_codes_.get(label, 0)
         while history not in self.trie_:
             history = history[1:]
         alpha_pos, alpha_hist, _, children_letters, children_probs = self.trie_[history]
@@ -126,7 +132,7 @@ class LabeledNgramModel:
         elif history != "":
             if label > 0:
                 first_coef = 0.5 * (1.0 - alpha_hist[label])
-                second_coef = 0.5 * (1.0 - alpha_pos[label-1]) * (1.0 - alpha_hist[0])
+                second_coef = 0.5 * (1.0 - alpha_pos[0]) * (1.0 - alpha_hist[0])
             else:
                 first_coef, second_coef = 0.0, (1.0 - alpha_hist[0])
             while True:
@@ -141,7 +147,7 @@ class LabeledNgramModel:
                 if history == "":
                     break
                 if label > 0:
-                    second_coef += 0.5 * first_coef * (1.0 - alpha_pos[label-1])
+                    second_coef += 0.5 * first_coef * (1.0 - alpha_pos[0])
                     first_coef *= 0.5 * (1.0 - alpha_hist[label])
                 second_coef *= (1.0 - alpha_hist[0])
         else:
@@ -168,7 +174,8 @@ class LabeledNgramModel:
     def generate_word(self, label, return_probs=False):
         label = self.label_codes_.get(label, 0)
         history, word, probs = "^", "", []
-        for i in range(self.max_length_ + 4):
+        end_prob = 0.0
+        for i in range(self.max_length_ * 5):
             low, up, sample_label = 0.0, 1.0, label
             while history not in self.trie_ or len(self.trie_[history][2]) == 0:
                 history = history[1:]
@@ -180,8 +187,8 @@ class LabeledNgramModel:
                 alpha_pos, alpha_hist, children_letters, _, children_probs = self.trie_[sample_history]
                 # выбираем, из какого распределения сэмплировать
                 if sample_label > 0:
-                    first = 0.5 * (alpha_pos[sample_label - 1] + alpha_hist[sample_label])
-                    second = 0.5 * (1 + alpha_pos[sample_label-1])
+                    first = 0.5 * (alpha_pos[0] + alpha_hist[sample_label])
+                    second = 0.5 * (1 + alpha_pos[0])
                     levels = [first, second, 1.0]
                 else:
                     levels = [alpha_hist[0], 1]
@@ -197,16 +204,32 @@ class LabeledNgramModel:
             coin = np.random.uniform(0, curr_probs[-1])
             index = bisect.bisect_left(curr_probs, coin)
             letter = curr_letters[index]
-            prob, history = self.prob(history, letter, label, return_history=True)
-            probs.append(prob)
+            prob, new_history = self.prob(history, letter, label, return_history=True)
             if letter != "$":
-                word += letter
+                if prob >= np.random.uniform(0, self.min_letter_prob):
+                    probs.append(prob)
+                    word += letter
+                    history = new_history
+                    if len(word) >= self.max_length_ + 4:
+                        history, word = "^", ""
             else:
-                break
+                if len(word) >= 5 and prob >= np.random.uniform(0, self.min_end_prob):
+                    probs.append(prob)
+                    break
+                else:
+                    history, word = "^", ""
         if self.reverse:
             word = word[::-1]
             probs[:-1] = probs[-2::-1]
         return (word, probs) if return_probs else word
+
+    def generate_words(self, n, return_probs=False):
+        label_probs = [self.label_counts_[x] for x in self.labels_]
+        label_probs = np.cumsum(label_probs)
+        coins = np.random.uniform(size=n)
+        labels = [self.labels_[bisect.bisect_left(label_probs, coin)] for coin in coins]
+        answer = [(self.generate_word(label, return_probs=return_probs), label) for label in labels]
+        return answer
 
     def __str__(self):
         answer = ""
@@ -225,11 +248,21 @@ infile = os.path.join(corr_dir, "{}-train-{}".format(language, mode))
 data = read_infile(infile)
 data = [(elem[0], elem[2][0]) for elem in data]
 model = LabeledNgramModel(max_ngram_length=3, all_ngram_length=3, min_count=2, reverse=True).train(data)
+dev_file = os.path.join(corr_dir, "{}-dev".format(language, mode))
+dev_data = read_infile(dev_file)
+dev_data = [(elem[0], elem[2][0]) for elem in dev_data]
+scores = []
+for word, label in dev_data:
+    score, letter_probs = model.score(word, label, return_letter_probs=True)
+    scores.extend(-np.log(elem[1]) for elem in letter_probs)
+    # print(word, "{:.3f}".format(score))
+    # print(" ".join("{}:{:.3f}".format(*elem) for elem in letter_probs))
+print("{:.3f}".format(np.mean(scores)))
 for _ in range(20):
-    label = np.random.choice(list("NVA"))
+    label = np.random.choice(["N", "V", "ADJ"])
     word, letter_probs = model.generate_word(label, return_probs=True)
     print(word, label)
-print(" ".join("{}:{:.3f}".format(*elem) for elem in zip(word + "$", letter_probs)))
+    print(" ".join("{}:{:.3f}".format(*elem) for elem in zip(word + "$", letter_probs)))
 # dev_file = os.path.join(corr_dir, "{}-dev".format(language, mode))
 # dev_data = read_infile(dev_file)
 # dev_data = [(elem[0], elem[2][0]) for elem in dev_data]
