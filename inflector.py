@@ -243,6 +243,7 @@ class Inflector:
     def __init__(self, slow=False, aligner_params=None, use_full_tags=False,
                  models_number=1, buckets_number=10, batch_size=32,
                  nepochs=25, validation_split=0.2, reverse=False,
+                 augmentation_weight = 0.1,
                  use_lm=False, lm_file=None,
                  use_input_attention=False, input_window=5,
                  output_history=1, use_output_embeddings=False, output_embeddings_size=16,
@@ -272,6 +273,7 @@ class Inflector:
         self.nepochs = nepochs
         self.validation_split = validation_split
         self.reverse = reverse
+        self.augmentation_weight = augmentation_weight
         self.use_lm = use_lm
         self.lm_file = lm_file
         self.use_input_attention = use_input_attention
@@ -697,7 +699,8 @@ class Inflector:
                                             buckets_number=buckets_number, bucket_size=bucket_size)
 
     def train(self, data, alignments=None, dev_data=None, dev_alignments=None,
-              alignments_outfile=None, save_file=None, model_file=None):
+              alignments_outfile=None, augmented_data=None,
+              save_file=None, model_file=None):
         """
 
         Parameters:
@@ -724,6 +727,12 @@ class Inflector:
         self._make_features([elem[2] for elem in data])
         if self.use_lm:
             self.recodings_for_lm_ = {i: self.lm_.toidx(x) for i, x in enumerate(self.symbols_)}
+        if augmented_data is not None:
+            weights = [1.0] * len(data) + [self.augmentation_weight] * len(augmented_data)
+            data += augmented_data
+        else:
+            weights = [1.0] * len(data)
+        weights = np.array(weights)
         data_by_buckets, buckets_indexes = self._preprocess(
             data, alignments, to_fit=True, alignments_outfile=alignments_outfile)
         if dev_data is not None:
@@ -738,13 +747,18 @@ class Inflector:
                     pos = save_file.rfind(".") if "." in save_file else len(save_file)
                     model_file = save_file[:pos] + "-model.hdf5"
                 self.to_json(save_file, model_file)
-        self._train_model(data_by_buckets, X_dev=dev_data_by_buckets, model_file=model_file)
+        weights = [weights[elem] for elem in buckets_indexes]
+        self._train_model(data_by_buckets, X_dev=dev_data_by_buckets, weights=weights, model_file=model_file)
         return self
 
-    def _train_model(self, X, X_dev=None, model_file=None):
+    def _train_model(self, X, X_dev=None, weights=None, model_file=None):
+        if weights is None:
+            weights = [1.0] * len(X)
+        weights = np.array(weights)
         train_indexes_by_buckets, dev_indexes_by_buckets = [], []
+        weights_by_buckets, dev_weights_by_buckets = [], []
         np.random.seed(self.random_state)
-        for curr_data in X:
+        for curr_data, curr_weights in zip(X, weights):
             curr_indexes = list(range(len(curr_data[0])))
             np.random.shuffle(curr_indexes)
             if X_dev is None:
@@ -752,11 +766,15 @@ class Inflector:
                 train_bucket_size = int((1.0 - self.validation_split) * len(curr_indexes))
                 train_indexes_by_buckets.append(curr_indexes[:train_bucket_size])
                 dev_indexes_by_buckets.append(curr_indexes[train_bucket_size:])
+                weights_by_buckets.append(curr_weights[curr_indexes[:train_bucket_size]])
+                dev_weights_by_buckets.append(curr_weights[curr_indexes[train_bucket_size:]])
             else:
                 train_indexes_by_buckets.append(curr_indexes)
+                weights_by_buckets.append(curr_weights[curr_indexes])
         if X_dev is not None:
             for curr_data in X_dev:
                 dev_indexes_by_buckets.append(list(range(len(curr_data[0]))))
+                dev_weights_by_buckets.append(np.ones(shape=len(curr_data[0],)))
         train_batches_indexes = list(chain.from_iterable(
             (((i, j) for j in range(0, len(bucket), self.batch_size))
              for i, bucket in enumerate(train_indexes_by_buckets))))
@@ -781,11 +799,11 @@ class Inflector:
                 auxiliary_symbols_number = None
             train_gen = generate_data(X, train_indexes_by_buckets, train_batches_indexes,
                                       self.batch_size, self.symbols_number,
-                                      inputs_number=self.inputs_number,
+                                      inputs_number=self.inputs_number, weights=weights_by_buckets,
                                       auxiliary_symbols_number=auxiliary_symbols_number)
             val_gen = generate_data(X_dev, dev_indexes_by_buckets, dev_batches_indexes,
                                     self.batch_size, self.symbols_number, shuffle=False,
-                                    inputs_number=self.inputs_number,
+                                    inputs_number=self.inputs_number, weights=dev_weights_by_buckets,
                                     auxiliary_symbols_number=auxiliary_symbols_number)
             model.fit_generator(train_gen, len(train_batches_indexes), epochs=self.nepochs,
                                 callbacks=curr_callbacks, verbose=0,
@@ -1017,8 +1035,9 @@ class Inflector:
         else:
             outputs, metrics, weights = first_output, ["accuracy"], None
         model = Model(inputs, outputs)
+        sample_weight_mode = "temporal" if self.auxiliary_targets_number > 0 else None
         model.compile(optimizer=adam(clipnorm=5.0), loss=loss, metrics=["accuracy"],
-                      loss_weights=weights, sample_weight_mode="temporal")
+                      loss_weights=weights, sample_weight_mode=sample_weight_mode)
         to_encoder = ([symbol_inputs, feature_inputs] if self.encode_auxiliary_symbol_outputs
                       else [symbol_inputs])
         if self.use_symbol_statistics:

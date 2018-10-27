@@ -117,11 +117,12 @@ class ModelMultiCheckpoint(ModelCheckpoint):
 
 class MultiEarlyStopping(EarlyStopping):
 
-    def __init__(self, monitor='loss',
+    def __init__(self, monitor='loss', baseline=0.0,
                  min_delta=0, patience=0, verbose=0, mode='auto'):
         super(EarlyStopping, self).__init__()
 
         self.monitor = [monitor, "val_{}".format(monitor)]
+        self.baseline = baseline
         self.patience = patience
         self.verbose = verbose
         self.min_delta = min_delta
@@ -198,6 +199,26 @@ class HingeLoss:
         corr_probs = kb.sum(y_pred * y_true, axis=-1)
         loss = kb.maximum(self.margin + kb.log(max_probs) - kb.log(corr_probs), 0.0)
         return loss
+
+
+def ce_with_negatives(y_true, y_pred):
+    return kb.categorical_crossentropy(kb.maximum(y_true, 0), y_pred)
+
+class PerplexitywithNegatives:
+
+    def __init__(self, max_bad_prob=0.005, neg_weight=0.5):
+        self.threshold = -np.log(max_bad_prob)
+        self.neg_weight = neg_weight
+
+    def __call__(self, y_true, y_pred):
+        y_true_pos = kb.maximum(y_true, 0)
+        pos_loss = -kb.sum(y_true_pos * kb.log(y_pred), axis=-1)
+        y_true_neg = kb.minimum(y_true, 0)
+        y_pred_neg = kb.maximum(self.threshold + kb.log(y_pred), 0.0)
+        neg_loss = -kb.sum(y_true_neg * y_pred_neg, axis=-1)
+        y_total_neg = kb.maximum(-kb.sum(y_true_neg, axis=-1), 1)
+        neg_loss /= y_total_neg
+        return pos_loss + neg_loss * self.neg_weight
 
 def gated_sum(X, disable_first=False):
     first, second, sigma = X
