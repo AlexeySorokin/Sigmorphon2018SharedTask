@@ -200,6 +200,20 @@ class HingeLoss:
         loss = kb.maximum(self.margin + kb.log(max_probs) - kb.log(corr_probs), 0.0)
         return loss
 
+
+class CEwithNegatives:
+
+    def __init__(self, max_bad_prob=0.005):
+        self.threshold = -np.log(max_bad_prob)
+
+    def __call__(self, y_true, y_pred):
+        y_true_pos = kb.maximum(y_true, 0)
+        pos_loss = -kb.sum(y_true_pos * kb.log(y_pred), axis=-1)
+        y_true_neg = kb.minimum(y_true, 0)
+        y_pred_neg = kb.maximum(self.threshold + kb.log(y_pred), 0.0)
+        neg_loss = -kb.sum(y_true_neg * y_pred_neg, axis=-1)
+        return pos_loss + neg_loss
+
 def gated_sum(X, disable_first=False):
     first, second, sigma = X
     tiling_shape = [kb.shape(first)[i] for i in range(kb.ndim(first))]
