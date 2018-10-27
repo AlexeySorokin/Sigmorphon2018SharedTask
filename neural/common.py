@@ -114,7 +114,8 @@ def generate_data(X, indexes_by_buckets, batches_indexes, batch_size,
             y_to_yield = [elem[curr_indexes] for elem in curr_bucket[inputs_number:]]
             # веса объектов
             # преобразуем y_to_yield в бинарный формат
-            y_to_yield[0] = to_one_hot(y_to_yield[0], symbols_number)
+            if y_to_yield[0].ndim == 2:
+                y_to_yield[0] = to_one_hot(y_to_yield[0], symbols_number)
             for i, value in auxiliary_symbols_number:
                 y_to_yield[i] = to_one_hot(y_to_yield[i], value)
             for i, elem in enumerate(y_to_yield[1:], 1):

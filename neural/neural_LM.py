@@ -25,7 +25,7 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
 from .common import *
 from .common import generate_data
-from .common_neural import make_useful_symbols_mask
+from .common_neural import make_useful_symbols_mask, PerplexitywithNegatives, ce_with_negatives
 from .vocabulary import Vocabulary, vocabulary_from_json
 from .cells import History, AttentionCell, attention_func
 
@@ -100,6 +100,8 @@ class NeuralLM:
 
     def __init__(self, reverse=False, min_symbol_count=1,
                  batch_size=32, nepochs=20, validation_split=0.2,
+                 use_bigram_loss=False, bigram_loss_weight=0.5,
+                 bigram_loss_threshold=0.005,
                  use_label=False, use_feats=False, use_full_tags=False,
                  history=1, use_attention=False, attention_activation="concatenate",
                  use_attention_bias=False,
@@ -116,6 +118,9 @@ class NeuralLM:
         self.batch_size = batch_size
         self.nepochs = nepochs
         self.validation_split = validation_split
+        self.use_bigram_loss = use_bigram_loss
+        self.bigram_loss_weight = bigram_loss_weight
+        self.bigram_loss_threshold = bigram_loss_threshold
         self.use_label = use_label
         self.use_feats = use_feats
         self.use_full_tags = use_full_tags
@@ -319,7 +324,12 @@ class NeuralLM:
         else:
             self.labels_, self.label_codes_ = None, None
         X_train, indexes_by_buckets = self.transform(X)
-        self._make_statistics(X)
+        if self.use_bigram_loss:
+            self._make_bigrams(X_train)
+            for i, elem in enumerate(X_train):
+                elem[-1] = to_one_hot(elem[-1], self.symbols_number_)
+                elem[-1] -= self.bigram_mask_[elem[0]]
+        # self._make_statistics(X)
         if X_dev is not None:
             X_dev, dev_indexes_by_buckets = self.transform(X_dev, max_bucket_length=256)
         else:
@@ -334,6 +344,15 @@ class NeuralLM:
                     model_file = save_file[:pos] + ".hdf5"
             self.to_json(save_file, model_file)
         self.train_model(X_train, X_dev, model_file=model_file)
+        return self
+
+    def _make_bigrams(self, X):
+        bigram_mask = np.zeros(shape=(self.symbols_number_, self.symbols_number_), dtype=int)
+        for bucket in X:
+            for word in bucket[0]:
+                for i, symbol in enumerate(word[:-1]):
+                    bigram_mask[symbol, word[i+1]] = 1
+        self.bigram_mask_ = 1 - bigram_mask
         return self
 
     def _make_statistics(self, X):
@@ -368,7 +387,12 @@ class NeuralLM:
         # lstm_outputs = kl.LSTM(self.rnn_size, return_sequences=True, dropout=self.dropout)(to_decoder)
         outputs, initial_decoder_states,\
             final_decoder_states, lstm_outputs, pre_outputs = self._build_output_network(to_decoder)
-        compile_args = {"optimizer": ko.nadam(clipnorm=5.0), "loss": "categorical_crossentropy"}
+        if self.use_bigram_loss:
+            loss = PerplexitywithNegatives(self.bigram_loss_threshold, self.bigram_loss_weight)
+            metrics = [ce_with_negatives]
+        else:
+            loss, metrics  = "categorical_crossentropy", []
+        compile_args = {"optimizer": ko.nadam(clipnorm=5.0), "loss": loss, "metrics": metrics}
         self.model_ = Model(inputs, outputs)
         self.model_.compile(**compile_args)
         if self.verbose > 0:

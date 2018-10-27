@@ -11,7 +11,7 @@ from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector, predict_missed_answers
 from neural.neural_LM import NeuralLM, load_lm
 from paradigm_classifier import ParadigmChecker, LmRanker
-from ngram.augmentation import generate_auxiliary
+from augmentation.augmentation import generate_auxiliary
 from evaluate import evaluate, prettify_metrics
 from write import output_analysis
 
@@ -130,11 +130,13 @@ if __name__ == "__main__":
             augmentation_params = params.get("augmentation")
             if augmentation_params is not None:
                 suffix = int(augmentation_params["n"])
+                generation_params = augmentation_params.get("params", dict())
                 augment_file = "augmented/{}-{}-{}".format(language, mode, suffix)
                 if os.path.exists(augment_file):
                     auxiliary_data = read_infile(augment_file)
                 else:
-                    auxiliary_data = generate_auxiliary(data, dev_data, suffix, augment_lm_file, augment_file)
+                    auxiliary_data = generate_auxiliary(data, dev_data, suffix, augment_lm_file,
+                                                        augment_file, **generation_params)
             else:
                 auxiliary_data = None
             inflector.train(data, dev_data=dev_data, augmented_data=auxiliary_data, save_file=save_file)

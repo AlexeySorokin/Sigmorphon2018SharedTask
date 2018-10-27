@@ -438,6 +438,9 @@ class ParadigmSubstitutor:
                 get_first_form_pattern(self.descr)
         return self.paradigm_fragments[self.first_form_index_].substitute(var_values)
 
+    def get_const_fragments(self):
+        answer = tuple(fragmentor.const_fragments for fragmentor in self.paradigm_fragments)
+        return answer
 
 class Paradigm:
     """

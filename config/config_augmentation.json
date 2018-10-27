@@ -33,6 +33,6 @@
     }
   },
   "lm_dir": "language_models",
-  "augmentation": {"n": 1000},
+  "augmentation": {"n": 1000, "params": {"to_update_checker": false}},
   "predict": {"beam_width": 10, "beam_growth": 5, "prune_start": 3}
 }

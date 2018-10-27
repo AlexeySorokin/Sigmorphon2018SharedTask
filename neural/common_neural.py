@@ -201,10 +201,14 @@ class HingeLoss:
         return loss
 
 
-class CEwithNegatives:
+def ce_with_negatives(y_true, y_pred):
+    return kb.categorical_crossentropy(kb.maximum(y_true, 0), y_pred)
 
-    def __init__(self, max_bad_prob=0.005):
+class PerplexitywithNegatives:
+
+    def __init__(self, max_bad_prob=0.005, neg_weight=0.5):
         self.threshold = -np.log(max_bad_prob)
+        self.neg_weight = neg_weight
 
     def __call__(self, y_true, y_pred):
         y_true_pos = kb.maximum(y_true, 0)
@@ -212,7 +216,9 @@ class CEwithNegatives:
         y_true_neg = kb.minimum(y_true, 0)
         y_pred_neg = kb.maximum(self.threshold + kb.log(y_pred), 0.0)
         neg_loss = -kb.sum(y_true_neg * y_pred_neg, axis=-1)
-        return pos_loss + neg_loss
+        y_total_neg = kb.maximum(-kb.sum(y_true_neg, axis=-1), 1)
+        neg_loss /= y_total_neg
+        return pos_loss + neg_loss * self.neg_weight
 
 def gated_sum(X, disable_first=False):
     first, second, sigma = X
