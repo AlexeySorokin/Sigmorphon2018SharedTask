@@ -11,6 +11,7 @@ from read import read_languages_infile, read_infile
 from inflector import Inflector, load_inflector, predict_missed_answers
 from neural.neural_LM import NeuralLM, load_lm
 from paradigm_classifier import ParadigmChecker, LmRanker
+from ngram.augmentation import generate_auxiliary
 from evaluate import evaluate, prettify_metrics
 from write import output_analysis
 
@@ -43,6 +44,7 @@ if __name__ == "__main__":
     use_paradigms, use_lm, to_rerank_with_lm = False, False, ""
     lm_config_path = None
     evaluate_on_submission = False
+    use_auxiliary_data, auxiliary_data_suffix = False, 100
     for opt, val in opts:
         if opt == "-l":
             languages = read_languages_infile(val)
@@ -89,7 +91,6 @@ if __name__ == "__main__":
         infile = os.path.join(corr_dir, "{}-train-{}".format(language, mode))
         test_file = os.path.join(corr_dir, "{}-dev".format(language))
         data, dev_data, test_data = read_infile(infile), None, read_infile(test_file)
-        data *= params.get("data_multiple", 1)
         dev_data = test_data
         # data_for_alignment = [elem[:2] for elem in data]
         # aligner = Aligner(n_iter=1, separate_endings=True, init="lcs",
@@ -104,14 +105,15 @@ if __name__ == "__main__":
                 if value is not None:
                     inflector.__setattr__(param, value)
         else:
+            lm_dir = params.get("lm_dir")
+            lm_name = params.get("lm_name")
+            lm_file = "{}-{}.json".format(language, mode)
+            if lm_name is not None:
+                lm_file = lm_name + "-" + lm_file
+            if lm_dir is not None:
+                lm_file = os.path.join(lm_dir, lm_file)
+            augment_lm_file = lm_file
             if params["use_lm"]:
-                lm_dir = params.get("lm_dir")
-                lm_name = params.get("lm_name")
-                lm_file = "{}-{}.json".format(language, mode)
-                if lm_name is not None:
-                    lm_file = lm_name + "-" + lm_file
-                if lm_dir is not None:
-                    lm_file = os.path.join(lm_dir, lm_file)
                 if not os.path.exists(lm_file):
                     data_for_lm = [elem[1:] for elem in data]
                     dev_data_for_lm = [elem[1:] for elem in dev_data]
@@ -125,7 +127,17 @@ if __name__ == "__main__":
             inflector = Inflector(use_lm=use_lm, lm_file=lm_file, **params["model"])
         save_file = os.path.join(save_dir, filename + ".json") if save_dir is not None else None
         if to_train:
-            inflector.train(data, dev_data=dev_data, save_file=save_file)
+            augmentation_params = params.get("augmentation")
+            if augmentation_params is not None:
+                suffix = int(augmentation_params["n"])
+                augment_file = "augmented/{}-{}-{}".format(language, mode, suffix)
+                if os.path.exists(augment_file):
+                    auxiliary_data = read_infile(augment_file)
+                else:
+                    auxiliary_data = generate_auxiliary(data, dev_data, suffix, augment_lm_file, augment_file)
+            else:
+                auxiliary_data = None
+            inflector.train(data, dev_data=dev_data, augmented_data=auxiliary_data, save_file=save_file)
         if use_paradigms:
             paradigm_checker = ParadigmChecker().train(data)
         if to_rerank_with_lm:

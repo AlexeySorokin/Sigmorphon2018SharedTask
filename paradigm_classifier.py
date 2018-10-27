@@ -153,7 +153,6 @@ class ParadigmLmClassifier:
                     self.substitutors[pattern] = ParadigmSubstitutor(pattern)
                 self.patterns[descr][pattern] += 1
             except:
-                x = 1
                 pass
         new_descr_patterns = []
         for descr, curr_pattern_counts in self.patterns.items():
@@ -266,12 +265,16 @@ class ParadigmLmClassifier:
             for_prediction.append(counts if (counts is not None) else ([0.0] * len(data)))
         return np.array(for_prediction, dtype=float).T
 
-    def _predict_forms(self, scores, forms, indexes, source_forms=None, n=5, min_prob=0.01):
+    def _predict_forms(self, scores, forms, indexes, source_forms=None,
+                       n=5, min_prob=0.01, predict_no_forms=False):
         answer = []
         for i, start in enumerate(indexes[:-1]):
             end = indexes[i + 1]
             if start == end:
-                answer.append(([source_forms[i]], [1.0]))
+                if predict_no_forms:
+                    answer.append(([], []))
+                else:
+                    answer.append(([source_forms[i]], [1.0]))
                 continue
             curr_forms, curr_scores = forms[start:end], scores[start:end]
             curr_probs = np.exp(-curr_scores) / np.sum(np.exp(-curr_scores))
@@ -287,17 +290,17 @@ class ParadigmLmClassifier:
             answer.append((forms_to_return, probs))
         return answer
 
-    def predict_without_basic(self, data, n=5, min_prob=0.01):
+    def predict_without_basic(self, data, n=5, min_prob=0.01, predict_no_forms=False):
         possible_forms, indexes, for_prediction = self._calculate_lm_scores(data)
         scores = np.dot(for_prediction, self.weights) / 10
         source_forms = [elem[0] for elem in data]
-        return self._predict_forms(
-            scores, possible_forms, indexes, source_forms, n=n, min_prob=min_prob)
+        return self._predict_forms(scores, possible_forms, indexes, source_forms,
+                                   n=n, min_prob=min_prob, predict_no_forms=predict_no_forms)
 
     def _transform_basic_score(self, score):
         return sum(min(x, self.max_letter_score) for x in score[1])
 
-    def predict_with_basic(self, data, n=5, min_prob=0.01):
+    def predict_with_basic(self, data, n=5, min_prob=0.01, predict_no_forms=False):
         basic_model_params = {"feat_column": 1, "return_log": True, "log_base": 2.0,
                               "beam_width": self.basic_hyps_number}
         basic_predictions = self.basic_model.predict(data, **basic_model_params)
@@ -352,7 +355,8 @@ class ParadigmLmClassifier:
             scores = scores[:,1:]
         # scores[:,1:] /= 2.5
         scores = np.dot(scores, self.weights)
-        return self._predict_forms(scores, group_forms, indexes, n=n, min_prob=min_prob)
+        return self._predict_forms(scores, group_forms, indexes, n=n,
+                                   min_prob=min_prob, predict_no_forms=predict_no_forms)
 
     def _generate_data_for_tuning_new(self, data, n=10, min_prob=0.01):
         data, answers = [[elem[0], elem[2]] for elem in data], [elem[1] for elem in data]

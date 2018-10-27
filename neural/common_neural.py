@@ -117,11 +117,12 @@ class ModelMultiCheckpoint(ModelCheckpoint):
 
 class MultiEarlyStopping(EarlyStopping):
 
-    def __init__(self, monitor='loss',
+    def __init__(self, monitor='loss', baseline=0.0,
                  min_delta=0, patience=0, verbose=0, mode='auto'):
         super(EarlyStopping, self).__init__()
 
         self.monitor = [monitor, "val_{}".format(monitor)]
+        self.baseline = baseline
         self.patience = patience
         self.verbose = verbose
         self.min_delta = min_delta
