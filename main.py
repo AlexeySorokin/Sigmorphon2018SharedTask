@@ -1,4 +1,6 @@
 import sys
+import copy
+
 import getopt
 import os
 import ujson as json
@@ -132,11 +134,13 @@ if __name__ == "__main__":
                 suffix = int(augmentation_params["n"])
                 generation_params = augmentation_params.get("params", dict())
                 augment_file = "augmented/{}-{}-{}".format(language, mode, suffix)
-                if os.path.exists(augment_file):
+                if os.path.exists(augment_file) and generation_params.get("to_load", True):
                     auxiliary_data = read_infile(augment_file)
                 else:
+                    gen_params = copy.copy(generation_params)
+                    gen_params.pop("to_load")
                     auxiliary_data = generate_auxiliary(data, dev_data, suffix, augment_lm_file,
-                                                        augment_file, **generation_params)
+                                                        augment_file, **gen_params)
             else:
                 auxiliary_data = None
             inflector.train(data, dev_data=dev_data, augmented_data=auxiliary_data, save_file=save_file)
