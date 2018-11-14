@@ -539,6 +539,8 @@ class NeuralLM:
                                np.arange(length)[np.newaxis,:], answer]
         if not return_array:
             letter_scores = [elem[:length] for elem, length in zip(letter_scores, lengths)]
+        if self.reverse:
+            letter_scores = [elem[::-1] for elem in letter_scores]
         return letter_scores, total
 
     def score(self, x, **args):
